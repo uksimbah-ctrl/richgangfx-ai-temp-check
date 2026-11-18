@@ -1,7 +1,4 @@
 import { explainDigits } from "@/lib/engine/modules";
-import { NO_VERIFIED_EDGE } from "@/lib/engine/digit-engines";
-import { contractName } from "@/lib/engine/catalog";
-import { confidenceLabel } from "@/lib/engine/profiles";
 import { useDesk } from "@/lib/desk/store";
 
 export function DigitInsight() {
@@ -26,54 +23,26 @@ export function DigitInsight() {
     minEffective: profile?.minEffective,
     z: profile?.intervalZ,
     persist: profile?.walkForward,
+    minSample: profile?.minSample,
+    lookback: profile?.shortWindow,
     stake: quote?.stake ?? profile?.stake ?? null,
     payout: quote?.payout ?? null,
     ask: quote?.ask ?? null,
   });
-  const name = tradeType ? contractName(tradeType) : "None selected";
-  const max = Math.max(1, ...card.counts);
+  const signal = plans.some((row) => row.type === tradeType && row.status === "pricing");
+  const qualified = signal || card.status === "Qualified";
+  const status = qualified ? "Signal" : card.status === "Not qualified" ? "No signal" : "Waiting";
+  const line = qualified ? "Ready to price. Not a verified edge." : status === "No signal" ? "No signal. The estimate does not clear the baseline." : "Waiting for the latest ticks to agree.";
 
   return (
-    <section className="mt-3 grid grid-cols-2 gap-2 text-sm">
-      <Fact label="Even / Odd" value={`${card.even} / ${card.odd}`} />
-      <Fact label="Streak" value={card.streak} />
-      <Fact label="Contract" value={name} />
-      <Fact label="Baseline" value={card.fair} />
-      <Fact label="Observed" value={card.observed} />
-      <Fact label="Estimate" value={card.estimate} />
-      <Fact label="Interval" value={card.interval} />
-      <Fact label="Sample" value={String(card.sample)} />
-      <Fact label="Effective" value={card.effective} />
-      <Fact label="Hits" value={card.hits} />
-      <Fact label="Break-even" value={card.breakEven} />
-      <Fact label="Ask" value={card.ask} />
-      <Fact label="Payout" value={card.payout} />
-      <Fact label="Expected return" value={card.expectedReturn} />
-      <Fact label="Net if won" value={card.netProfit} />
-      <Fact label="Loss if lost" value={card.loss} />
-      <Fact label="Payout / stake" value={card.ratio} />
-      <Fact label="Edge" value={NO_VERIFIED_EDGE} />
-      <Fact label="Status" value={card.status} />
-      <Fact label="Strategies" value={card.active} />
-      <div className="col-span-2">
-        <div className="text-xs tracking-wide text-muted uppercase">Frequency</div>
-        <div className="mt-1 grid grid-cols-10 gap-1">
-          {card.counts.map((count, digit) => (
-            <div key={digit} className="min-w-0 text-center">
-              <div className="mx-auto h-10 w-2 rounded-sm bg-bg">
-                <div className="w-2 rounded-sm bg-gold" style={{ height: `${(count / max) * 100}%`, marginTop: `${100 - (count / max) * 100}%` }} />
-              </div>
-              <div className="font-mono text-xs text-muted">{digit}</div>
-            </div>
-          ))}
-        </div>
+    <section className="mt-3 text-sm">
+      <div className="grid grid-cols-2 gap-2">
+        <Fact label="Status" value={status} />
+        <Fact label="Baseline" value={card.fair} />
+        <Fact label="Estimate" value={card.estimate} />
+        <Fact label="Interval" value={card.interval} />
       </div>
-      <p className="col-span-2 text-sm text-pretty text-fg">{card.reason}</p>
-      {profile ? (
-        <p className="col-span-2 text-sm text-pretty text-muted">
-          This contract's evidence settings: {confidenceLabel(profile.intervalZ)} interval. Training {profile.trainSize}. Validation {profile.validationSize}. Final {profile.finalSize} across {profile.validationPeriods} periods. Minimum effective out-of-sample {profile.minOos}. 95% is the recommended research interval. Stake and duration are unchanged.
-        </p>
-      ) : null}
+      <p className="mt-2 text-sm text-muted">{line}</p>
     </section>
   );
 }

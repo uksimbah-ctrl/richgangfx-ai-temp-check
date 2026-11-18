@@ -54,7 +54,7 @@ const SECTIONS: { title: string; body: string[] }[] = [
       "Signals prices contracts and does not buy. Scanner does not request prices.",
       "Stop in the header is the emergency stop. There is no separate Pause or Resume button.",
       "Sell tracked contracts asks Deriv to close contracts this desk is watching, when the broker allows a sale.",
-      "Arm demo allows demo orders. Arm real asks you to type ARM REAL first.",
+      "Start allows demo orders. Start real asks you to type START REAL first.",
     ],
   },
   {
@@ -73,7 +73,7 @@ const SECTIONS: { title: string; body: string[] }[] = [
       "Missing balance: the account can be connected while the balance field is still empty. Wait for the balance stream, or reconnect.",
       "Feed down: the public quote socket dropped. The desk retries. Leave the page open.",
       "Proposal error: the log shows Deriv’s reason, such as an invalid barrier or a stake below the minimum. The digit pad only offers digits that contract accepts.",
-      "Buy failed: the order was refused after the quote. Read the log line. Real accounts stay blocked until ARM REAL is confirmed.",
+      "Buy failed: the order was refused after the quote. Read the log line. Real accounts stay blocked until START REAL is confirmed.",
       "Unsupported contract: if Deriv does not list it on that symbol, the plan says it is unavailable. Boom and Crash names are not a full digit book.",
     ],
   },

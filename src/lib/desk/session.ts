@@ -5,8 +5,10 @@ import { digitChoices, fairDigit } from "@/lib/engine/math";
 import { CONTRACT_BY_TYPE, contractName } from "@/lib/engine/catalog";
 import { checkDigitProposal, restoreDigitPick } from "@/lib/engine/contract-check";
 import { orderStake, researchProfile, tradeGate, type TradeMode } from "@/lib/engine/risk";
-import { cappedStake, defaultProfile, entryBlock, healthVerdict, releaseLossSuspension, type StrategyProfile } from "@/lib/engine/profiles";
-import { observeModule, MODULE_IDS, type ModuleId } from "@/lib/engine/modules";
+import { defaultProfile, entryBlock, healthVerdict, releaseLossSuspension, type StrategyProfile } from "@/lib/engine/profiles";
+import { applyStrategyChoice, observeModule, MODULE_IDS, MODULE_NAMES } from "@/lib/engine/modules";
+import { contractSelected } from "@/lib/desk/contract-scope";
+import { mergeTickHistory } from "@/lib/desk/tick-history";
 import { mergeBooks, readLocalBook, writeLocalBook } from "@/lib/strategy/local";
 import { fetchAccounts, fetchTradingUrl, type CredentialKind } from "@/lib/deriv/rest";
 import { DerivSocket } from "@/lib/deriv/socket";
@@ -76,6 +78,23 @@ const PKCE_KEY = "rg.pkce";
 
 const publicSock = new DerivSocket();
 const tradeSock = new DerivSocket();
+
+export function bulkAccountLive(): boolean {
+  return tradeSock.connected;
+}
+
+/** One authorized account socket. The bulk trader sends its own proposals and buys on it. Desk plans are not changed. */
+export function bulkAccountRequest(payload: Record<string, unknown>, timeoutMs = 12000): Promise<DerivMsg> {
+  return tradeSock.request(payload, timeoutMs);
+}
+
+export function bulkAccountStream(payload: Record<string, unknown>, onUpdate: (msg: DerivMsg) => void): Promise<DerivMsg> {
+  return tradeSock.stream(payload, onUpdate);
+}
+
+export function bulkAccountForget(id: string | undefined) {
+  tradeSock.forget(id);
+}
 
 let secret = "";
 let kind: CredentialKind | null = null;
@@ -216,9 +235,8 @@ export function resetLimits() {
 
 let buysInFlight = 0;
 
-function sameEvenOdd(selected: string | null, type: string): boolean {
-  if (selected !== "DIGITEVEN" && selected !== "DIGITODD") return false;
-  return type === "DIGITEVEN" || type === "DIGITODD";
+function sameContract(selected: string | null, type: string): boolean {
+  return contractSelected(selected, type);
 }
 
 function signalKey(plan: Plan): string {
@@ -266,7 +284,7 @@ export function setEmergency(on: boolean) {
 export function setArmDemo(on: boolean) {
   patch({ armDemo: on });
   persist();
-  log("info", on ? "Demo trading armed." : "Demo trading disarmed.");
+  log("info", on ? "Desk started." : "Desk stopped.");
 }
 
 export function setArmReal(on: boolean) {
@@ -274,7 +292,7 @@ export function setArmReal(on: boolean) {
   if (!on) {
     const off = armAfterAccountChange();
     patch({ armReal: off.armReal, armedAccountId: off.armedAccountId, realPhrase: "" });
-    log("info", "Real-money trading disarmed.");
+    log("info", "Real-money trading stopped.");
     return;
   }
   const decision = armRealDecision({
@@ -286,7 +304,7 @@ export function setArmReal(on: boolean) {
     return;
   }
   patch({ armReal: true, armedAccountId: decision.armedAccountId, realPhrase: state.realPhrase.trim() });
-  log("warn", `Real-money trading armed for ${decision.armedAccountId}.`);
+  log("warn", `Real-money trading started for ${decision.armedAccountId}.`);
 }
 
 export function setRealPhrase(realPhrase: string) {
@@ -314,12 +332,19 @@ export function toggleStrategy(type: string) {
 export function setTradeType(type: string | null) {
   if (type != null && !CONTRACT_BY_TYPE.has(type)) return;
   const name = type ? contractName(type) : null;
+  const chosen = type ? applyStrategyChoice(useDesk.getState().modules, type) : applyStrategyChoice(useDesk.getState().modules, null);
+  const names = type
+    ? MODULE_IDS.filter((id) => chosen[id]?.enabled)
+        .map((id) => MODULE_NAMES[id])
+        .join(", ")
+    : "";
   useDesk.setState((s) => ({
     tradeType: type,
     enabled: type ? { ...s.enabled, [type]: true } : s.enabled,
+    modules: chosen,
   }));
   persist();
-  log("info", name ? `Bot will trade ${name} only.` : "Bot contract cleared. Full auto will not buy until you pick one.");
+  log("info", name ? `Bot will trade ${name} only. Using ${names}.` : "Bot contract cleared. Full auto will not buy until you pick one.");
 }
 
 export function setDigitPick(digit: number | null) {
@@ -399,7 +424,7 @@ export async function switchAccount(accountId: string) {
     buyHold: pending?.note ?? null,
   });
   if (previous && previous !== accountId) {
-    log("warn", "Account changed. Real-money trading is off until you type ARM REAL for this account.");
+    log("warn", "Account changed. Real-money trading is off until you type START REAL for this account.");
   }
   persist();
   await openTrading(accountId);
@@ -478,7 +503,7 @@ export async function runBacktest(symbol: string, type: string): Promise<Backtes
   const pip = useDesk.getState().pip[symbol] ?? history.pip_size ?? 2;
   const state = useDesk.getState();
   const profile = state.profiles[type] ?? defaultProfile(type);
-  const stake = profile.stake > 0 ? profile.stake : 1;
+  const stake = orderStake(state.risk, null, 0) ?? state.risk.fixedStake;
   if (type.startsWith("DIGIT")) {
     const choices = digitChoices(type);
     const picked = state.digitPick;
@@ -668,6 +693,41 @@ async function subscribeFocus() {
       log("warn", err instanceof Error ? err.message : `Could not stream ${symbol}.`);
     }
   }
+  for (const symbol of symbols) {
+    if (gen !== focusGen || stopped) return;
+    await seedHistory(symbol, gen);
+  }
+}
+
+async function seedHistory(symbol: string, gen: number) {
+  if (gen !== focusGen || stopped || !publicSock.connected) return;
+  try {
+    const history = await publicSock.request({
+      ticks_history: symbol,
+      adjust_start_time: 1,
+      count: 1000,
+      end: "latest",
+      start: 1,
+      style: "ticks",
+    });
+    if (gen !== focusGen || stopped) return;
+    const prices = (history.history?.prices ?? []).map((value) => Number(value)).filter((value) => Number.isFinite(value));
+    const times = (history.history?.times ?? []).map((value) => Number(value));
+    if (prices.length === 0 || times.length === 0) {
+      log("warn", `${symbol} did not return historical ticks, so the digit sample only grows from new ticks.`);
+      return;
+    }
+    const pip = num(history.pip_size);
+    useDesk.setState((s) => ({
+      ticks: { ...s.ticks, [symbol]: mergeTickHistory(s.ticks[symbol] ?? [], prices, times) },
+      pip: pip != null ? { ...s.pip, [symbol]: pip } : s.pip,
+    }));
+    log("info", `${symbol} loaded ${prices.length} historical ticks for the digit engines.`);
+    refreshPlans();
+  } catch (err) {
+    if (gen !== focusGen || stopped) return;
+    log("warn", err instanceof Error ? err.message : `${symbol} history could not be loaded.`);
+  }
 }
 
 function ingest(tick: Tick) {
@@ -711,6 +771,7 @@ async function loadContracts(symbols: string[]) {
     }
     await sleep(250);
   }
+  refreshPlans();
 }
 
 function reviewModules() {
@@ -749,7 +810,7 @@ async function loadModules() {
     const { loadStrategyModules } = await import("@/lib/strategy/modules.functions");
     const loaded = await loadStrategyModules();
     if (!loaded.modules) return;
-    useDesk.setState((s) => ({ modules: { ...s.modules, ...loaded.modules } }));
+    useDesk.setState((s) => ({ modules: applyStrategyChoice({ ...s.modules, ...loaded.modules }, s.tradeType) }));
   } catch {
     log("warn", "Extra strategy modules could not be loaded. Existing contract settings were left as they are.");
   }
@@ -817,22 +878,40 @@ function refreshPlans() {
   patch({ plans });
 }
 
+function noteDesk(partial: { proposalNote?: string | null; executionNote?: string | null }) {
+  const state = useDesk.getState();
+  const next: { proposalNote?: string | null; executionNote?: string | null } = {};
+  if (partial.proposalNote !== undefined && partial.proposalNote !== state.proposalNote) next.proposalNote = partial.proposalNote;
+  if (partial.executionNote !== undefined && partial.executionNote !== state.executionNote) next.executionNote = partial.executionNote;
+  if (next.proposalNote !== undefined || next.executionNote !== undefined) patch(next);
+}
+
 async function pump() {
   if (pumping || useDesk.getState().feed !== "live") return;
-  if (useDesk.getState().mode === "scanner") return;
+  if (useDesk.getState().mode === "scanner") {
+    noteDesk({ executionNote: "Scanner does not request a proposal." });
+    return;
+  }
   const room = useDesk.getState();
   releaseSettledBatch();
   const locked = useDesk.getState().batchLock;
   if (room.mode === "auto") {
     const open = scopedOpenCount(room.journal, room.accountId);
-    if (open + buysInFlight >= entryCap(room.batchSize)) return;
-    if (locked && locked.ids.length >= locked.size) return;
+    const capNow = entryCap(room.batchSize);
+    if (open + buysInFlight >= capNow) {
+      noteDesk({ executionNote: capNow === 1 ? "One contract is already open. The next entry waits until it finishes." : `Batch is full. ${open} contracts are open.` });
+      return;
+    }
+    if (locked && locked.ids.length >= locked.size) {
+      noteDesk({ executionNote: `This batch is only ${locked.label}. It waits for that signal to settle.` });
+      return;
+    }
   }
   const now = Date.now();
   const plans = useDesk.getState().plans.filter((plan) => {
     if (plan.status !== "pricing" || !plan.request) return false;
     const selected = useDesk.getState().tradeType;
-    if (!selected || (plan.type !== selected && !sameEvenOdd(selected, plan.type))) return false;
+    if (!selected || !sameContract(selected, plan.type)) return false;
     const key = `${plan.symbol}:${plan.type}`;
     if (inFlight.has(key)) return false;
     const until = muted.get(key) ?? 0;
@@ -844,11 +923,24 @@ async function pump() {
       patch({ batchLock: null });
       log("info", `${locked.label} ended before the batch filled. No other signal was added.`);
     }
+    noteDesk({ executionNote: `${locked.label} is still the open batch. No other contract is added.` });
     return;
   }
   const ranked = [...sameSignal].sort((a, b) => (b.pCons ?? -1) - (a.pCons ?? -1));
   const plan = ranked[0];
-  if (!plan) return;
+  if (!plan) {
+    const selected = useDesk.getState().tradeType;
+    const held = selected ? useDesk.getState().plans.some((row) => sameContract(selected, row.type) && inFlight.has(`${row.symbol}:${row.type}`)) : false;
+    noteDesk({
+      executionNote: !selected
+        ? "No contract is selected, so no proposal is sent."
+        : held
+          ? "A proposal for this contract is already in flight."
+          : null,
+    });
+    return;
+  }
+  noteDesk({ proposalNote: `Sending a one-time proposal for ${plan.name}.`, executionNote: null });
   pumping = true;
   patch({ phase: useDesk.getState().phase + 1 });
   try {
@@ -858,10 +950,8 @@ async function pump() {
   }
 }
 
-function strategyStake(state: ReturnType<typeof useDesk.getState>, type: string, balance: number | null): number {
-  const profile = state.profiles[type] ?? defaultProfile(type);
-  const global = orderStake(state.risk, balance, lossStreak(state.journal, state.accountId)) ?? state.risk.fixedStake;
-  return cappedStake(profile, global, state.risk.maxStake);
+function strategyStake(state: ReturnType<typeof useDesk.getState>, balance: number | null): number {
+  return orderStake(state.risk, balance, lossStreak(state.journal, state.accountId)) ?? 0;
 }
 
 function strategyReasonFor(plan: Plan, ev: number | null, payout: number | null, stake: number): string | null {
@@ -896,9 +986,18 @@ function strategyReasonFor(plan: Plan, ev: number | null, payout: number | null,
     } else break;
   }
   const exposure = plan.request?.multiplier ? stake * plan.request.multiplier : null;
-  const verdict = healthVerdict(profile, { consecutiveLosses, dailyPnl });
+  const desk = state.risk;
+  const gated: StrategyProfile = {
+    ...profile,
+    maxOpen: cap,
+    cooldownSec: desk.cooldownSec,
+    maxDailyLoss: desk.dailyLossLimit,
+    maxExposure: desk.maxMultiplierExposure,
+    dailyTradeLimit: Number.MAX_SAFE_INTEGER,
+  };
+  const verdict = healthVerdict(gated, { consecutiveLosses, dailyPnl });
   if (verdict) return verdict.reason;
-  return entryBlock({ ...profile, maxOpen: cap }, { ev, payout, stake, openForStrategy, tradesToday, dailyPnl, consecutiveLosses, exposure, secondsSinceLoss });
+  return entryBlock(gated, { ev, payout, stake, openForStrategy, tradesToday, dailyPnl, consecutiveLosses, exposure, secondsSinceLoss });
 }
 
 async function pricePlan(plan: Plan, depth = 0) {
@@ -907,7 +1006,7 @@ async function pricePlan(plan: Plan, depth = 0) {
   const state = useDesk.getState();
   const account = state.accounts.find((a) => a.account_id === state.accountId) ?? null;
   const currency = account?.currency ?? "USD";
-  const stake = strategyStake(state, plan.type, account?.balance ?? null);
+  const stake = strategyStake(state, account?.balance ?? null);
   const checked = checkDigitProposal({
     contractType: plan.type,
     symbol: plan.symbol,
@@ -918,6 +1017,7 @@ async function pricePlan(plan: Plan, depth = 0) {
     currency: account?.currency ?? "USD",
   });
   if (!checked.ok) {
+    noteDesk({ proposalNote: checked.reason, executionNote: checked.reason });
     pushOpp({
       plan,
       stake,
@@ -988,6 +1088,7 @@ async function pricePlan(plan: Plan, depth = 0) {
       return;
     }
     muted.set(key, Date.now() + 45_000);
+    noteDesk({ proposalNote: text, executionNote: text });
     pushOpp({
       plan,
       stake,
@@ -1027,7 +1128,10 @@ function stillAuthorized(capturedAccountId: string, intent: "auto" | "approve"):
     emergency: state.emergency,
     autoReady,
   });
-  if (!allowed.ok) log("warn", allowed.reason);
+  if (!allowed.ok) {
+    noteDesk({ executionNote: allowed.reason });
+    log("warn", allowed.reason);
+  }
   return allowed.ok;
 }
 
@@ -1077,7 +1181,7 @@ async function onQuote(
     tradable,
   });
   const proposalId = proposal?.id?.trim() ?? "";
-  await fulfillQuote({
+  const decision = await fulfillQuote({
     seen: purchasedIds,
     quote: {
       source: delivery.source,
@@ -1093,6 +1197,14 @@ async function onQuote(
       await sendBuy(id, ask, plan, stake, currency, ev, buyIntent);
     },
   });
+  if (decision.action === "skip") {
+    noteDesk({
+      proposalNote: proposalId ? `Proposal ${proposalId} was received and not purchased.` : "The proposal was received and not purchased.",
+      executionNote: decision.reason,
+    });
+  } else {
+    noteDesk({ proposalNote: `Proposal ${decision.proposalId} was accepted for purchase.` });
+  }
   if (delivery.streaming && useDesk.getState().mode !== "auto") tradeSock.forget(msg.subscription?.id);
 }
 
@@ -1160,18 +1272,32 @@ async function sendBuy(
   const state = useDesk.getState();
   if (intent === "auto") {
     if (!state.tradeType) {
-      log("warn", "Choose the contract the bot trades. Full auto will not buy until one is selected.");
+      const why = "Choose the contract the bot trades. Full auto will not buy until one is selected.";
+      noteDesk({ executionNote: why });
+      log("warn", why);
       return;
     }
-    if (plan.type !== state.tradeType && !sameEvenOdd(state.tradeType, plan.type)) return;
+    if (plan.type !== state.tradeType) {
+      noteDesk({ executionNote: `${plan.name} is not the selected contract, so it was not purchased.` });
+      return;
+    }
   }
   const openNow = scopedOpenCount(state.journal, state.accountId);
   const capNow = entryCap(state.batchSize);
   const lock = state.batchLock;
   const key = signalKey(plan);
-  if (slotsUsed(openNow, state.attempts, state.accountId) + buysInFlight >= capNow) return;
-  if (!batchAccepts(capNow > 1 ? lock : null, key, buysInFlight)) return;
-  if (batchWouldExceed(lock, key, state.attempts, state.accountId, capNow)) return;
+  if (slotsUsed(openNow, state.attempts, state.accountId) + buysInFlight >= capNow) {
+    noteDesk({ executionNote: capNow === 1 ? "One contract is already open. The next entry waits until it finishes." : `Batch is full. ${openNow} contracts are open.` });
+    return;
+  }
+  if (!batchAccepts(capNow > 1 ? lock : null, key, buysInFlight)) {
+    noteDesk({ executionNote: "This batch does not accept another contract yet." });
+    return;
+  }
+  if (batchWouldExceed(lock, key, state.attempts, state.accountId, capNow)) {
+    noteDesk({ executionNote: "This purchase would put the batch over its size, so it was not sent." });
+    return;
+  }
   buysInFlight += 1;
   const flight = `${plan.symbol}:${plan.type}`;
   let account = state.accounts.find((a) => a.account_id === state.accountId) ?? null;
@@ -1179,6 +1305,7 @@ async function sendBuy(
   try {
     const blocked = strategyReasonFor(plan, ev, null, price);
     if (blocked) {
+      noteDesk({ executionNote: blocked });
       log("warn", `${plan.name} on ${plan.symbol} blocked. ${blocked}`);
       return;
     }
@@ -1192,6 +1319,7 @@ async function sendBuy(
         armedAccountId: state.armedAccountId,
       });
       if (!allowed.ok) {
+        noteDesk({ executionNote: allowed.reason });
         log("warn", allowed.reason);
         return;
       }
@@ -1217,7 +1345,9 @@ async function sendBuy(
       exposure,
     });
     if (!gate.ok) {
-      log("warn", `${plan.name} on ${plan.symbol} blocked. ${gate.reasons[0] ?? ""}`);
+      const why = gate.reasons[0] ?? "The risk gate blocked this purchase.";
+      noteDesk({ executionNote: why });
+      log("warn", `${plan.name} on ${plan.symbol} blocked. ${why}`);
       return;
     }
     if (!account || inFlight.has(`buy:${flight}`)) return;
@@ -1229,6 +1359,7 @@ async function sendBuy(
         return;
       }
       if (checked.status !== "failed") {
+        noteDesk({ executionNote: checked.note });
         log("warn", checked.note);
         patch({ buyHold: checked.note });
         return;
@@ -1262,6 +1393,7 @@ async function sendBuy(
     if (!contractId) {
       pending = markUncertain(pending, "The buy response did not include a contract id. It will be checked before another purchase.");
       saveAttempt(pending);
+      noteDesk({ executionNote: pending.note, proposalNote: `Purchase ${pending.id} is unresolved.` });
       log("warn", `Uncertain purchase ${pending.id}. ${pending.note}`);
       const checked = await reconcileStoredAttempt(pending);
       if (checked.contractId && checked.status === "confirmed") {
@@ -1276,6 +1408,7 @@ async function sendBuy(
     const after = num(msg.buy?.balance_after);
     if (after != null) applyBalance(account.account_id, after, currency);
     patch({ buyHold: null });
+    noteDesk({ proposalNote: `Purchase confirmed. Contract ${contractId}.`, executionNote: null });
     log("good", added ? `Confirmed purchase ${pending.id}. Contract ${contractId}.` : `Confirmed purchase ${pending.id} was already recorded. It was not added again.`);
     const started = useDesk.getState().batchLock;
     if (started && started.ids.length === 1 && started.ids[0] === contractId) {
@@ -1691,7 +1824,6 @@ function persist(): boolean {
       clientId: s.clientId,
       remember: s.remember,
       accountId: s.accountId,
-      armDemo: s.armDemo,
       lastLossAt: s.lastLossAt,
       sessionResetAt: s.sessionResetAt,
       batchSize: s.batchSize,
@@ -1756,7 +1888,7 @@ function hydrate() {
       clientId: saved.clientId?.trim() ? saved.clientId : s.clientId,
       remember: saved.remember ?? s.remember,
       accountId,
-      armDemo: saved.armDemo ?? false,
+      armDemo: false,
       ...armFromStorage(saved),
       buyHold: pending?.note ?? null,
       equityPeaks: peaks,

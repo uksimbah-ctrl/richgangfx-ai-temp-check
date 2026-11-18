@@ -80,7 +80,7 @@ export function ModulesPanel() {
     <section className="rounded-md border border-blue/40 bg-surface p-3">
       <h2 className="text-sm font-medium text-fg">Strategy center</h2>
       <p className="mt-1 text-sm text-pretty text-muted">
-        Each strategy decides on its own. Market Regime only describes the market. The Ensemble compares strategies and cannot force or cancel a valid signal. A score is not a chance of winning.
+        Picking a contract turns on the strategies that can trade it. You do not choose them. Market Regime only describes the market. The Ensemble cannot force or cancel a valid signal.
       </p>
       <div className="mt-3 grid gap-4">
         {STRATEGY_GROUPS.map((group) => (
@@ -103,25 +103,18 @@ export function ModulesPanel() {
                   <article key={id} className="rounded-md border border-line p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <h3 className="text-sm font-medium">{NAMES[id]}</h3>
-                      <span className={`font-mono text-xs ${cfg.enabled ? "text-gold" : "text-muted"}`}>{cfg.enabled ? "Enabled" : "Disabled"}</span>
+                      <span className={`font-mono text-xs ${cfg.enabled ? "text-gold" : "text-muted"}`}>
+                        {retired ? "Retired" : cfg.enabled ? "Selected" : "Not used"}
+                      </span>
                     </div>
                     <p className="mt-1 text-sm text-muted">{moduleScope(id)} Status {cfg.status}.</p>
                     <p className="mt-1 text-sm text-fg">
                       {tradeType
                         ? supports
-                          ? `Supports the selected contract.`
-                          : `Does not authorize the selected contract.`
-                        : "No contract is selected."}
+                          ? "Selected for this contract."
+                          : "Not used for this contract."
+                        : "Pick a contract and the matching strategies turn on."}
                     </p>
-                    <label className="mt-2 flex min-h-11 items-center justify-between text-sm">
-                      {retired ? "Retired" : "Enabled"}
-                      <input
-                        type="checkbox"
-                        checked={!retired && cfg.enabled}
-                        disabled={retired}
-                        onChange={(event) => update(id, { enabled: event.target.checked })}
-                      />
-                    </label>
                     <details className="rounded-md border border-line px-3">
                       <summary className="min-h-11 cursor-pointer text-sm">Settings</summary>
                       <label className="flex min-h-11 items-center justify-between text-sm">

@@ -1,8 +1,8 @@
 import { CONTRACT_BY_TYPE, type ContractMeta, type Family } from "./catalog.ts";
-import { selectAutoBarrier } from "./digit-engines.ts";
+import { selectAutoBarrier, runDigitEngine } from "./digit-engines.ts";
 import { readDirection } from "./indicators.ts";
 import { defaultProfile, type StrategyProfile } from "./profiles.ts";
-import { approvedEntry, type ModuleConfig } from "./modules.ts";
+import { activeEntryModules, approvedEntry, type ModuleConfig } from "./modules.ts";
 import {
   clamp,
   decimalPlaces,
@@ -193,12 +193,17 @@ function applyProfile(plan: Plan, input: BookInput, offered: Offered | undefined
       }
     }
   }
+  if (input.modules && plan.family === "digit" && (plan.status === "pricing" || plan.status === "warming")) {
+    if (activeEntryModules("digit", plan.type, input.modules).length === 0) {
+      return applyContractEngine(plan, input, profile);
+    }
+  }
   if (input.modules) {
     const decision = approvedEntry(plan.family, plan.type, input.quotes, input.modules, input.pipSize, plan.request?.barrier ?? "", {
       minEffective: profile.minEffective,
       z: profile.intervalZ,
       persist: profile.walkForward,
-      stake: profile.stake,
+      stake: input.stake,
       payout: null,
     });
     if (!decision.ok) {
@@ -224,6 +229,54 @@ function applyProfile(plan: Plan, input: BookInput, offered: Offered | undefined
 
 function stand(plan: Plan, note: string): Plan {
   return { ...plan, status: "stand-aside", note, request: undefined };
+}
+
+/** The six digit contracts judge themselves when no optional module is turned on for that contract. */
+function applyContractEngine(plan: Plan, input: BookInput, profile: StrategyProfile): Plan {
+  const need = Math.max(20, profile.minSample);
+  if (input.quotes.length < need) {
+    const row = stand(
+      plan,
+      `WAIT. ${plan.name} has ${input.quotes.length} ticks. Need ${need} before this contract can be judged. No probability was invented.`,
+    );
+    row.diagnostics = [...plan.diagnostics, { label: "Sample", value: `${input.quotes.length}/${need}` }];
+    return row;
+  }
+  const report = runDigitEngine({
+    contract: plan.type,
+    quotes: input.quotes,
+    pip: input.pipSize,
+    barrier: plan.request?.barrier ?? "",
+    minSample: need,
+    minConfidence: 0.5,
+    strategy: plan.name,
+    lookback: Math.max(20, profile.shortWindow),
+    minEffective: profile.minEffective,
+    z: profile.intervalZ,
+    persist: profile.walkForward,
+    stake: input.stake,
+    payout: null,
+  });
+  const diagnostics = [
+    ...plan.diagnostics,
+    { label: "Sample", value: String(report.sample) },
+    { label: "Effective", value: String(Math.round(report.nEff)) },
+    { label: "Interval", value: `${(report.lo * 100).toFixed(1)}% – ${(report.hi * 100).toFixed(1)}%` },
+  ];
+  if (report.status !== "yes") {
+    const row = stand(plan, report.reason);
+    row.diagnostics = diagnostics;
+    row.pModel = report.estimated;
+    row.pCons = report.lo;
+    return row;
+  }
+  plan.status = "pricing";
+  plan.note = report.reason;
+  plan.pModel = report.estimated;
+  plan.pCons = report.lo;
+  plan.diagnostics = diagnostics;
+  plan.rationale = [...plan.rationale, report.reason];
+  return plan;
 }
 
 function closest(values: number[], target: number): number | null {
@@ -254,7 +307,7 @@ function planDigit(meta: ContractMeta, f: Features, input: BookInput, offered: O
   const allowed = choices == null ? null : listed?.length ? choices.filter((n) => listed.includes(n)) : choices;
   const profile = input.profiles?.[meta.type] ?? defaultProfile(meta.type);
   const prior = input.prior ?? 200;
-  const z = input.z ?? 1.64;
+  const z = input.z ?? 1.96;
   const digits = f.quotes.map((quote) => lastDigit(quote, input.pipSize)).slice(-profile.longWindow);
   let barrier = "";
   let autoNote = "";

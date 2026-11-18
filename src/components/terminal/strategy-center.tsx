@@ -182,7 +182,7 @@ export function StrategyCenter() {
     }
   }
 
-  const fields = fieldsFor(type);
+  const fields = fieldsFor(type).filter((field) => !["stake", "maxStake", "maxOpen", "cooldownSec", "dailyTradeLimit", "maxDailyLoss", "maxConsecutiveLosses", "maxExposure"].includes(field));
   const other = profiles[compare] ?? defaultProfile(compare);
 
   return (
@@ -191,7 +191,7 @@ export function StrategyCenter() {
       <section className="rounded-md border border-line bg-surface p-3">
         <h2 className="text-sm font-medium text-fg">Strategy Control Center</h2>
         <p className="mt-1 text-sm text-pretty text-muted">
-          Each contract keeps its own settings. A preset only changes the signal filters. Stake, loss limits, cooldown, and exposure stay as you set them. Enabling a strategy does not arm demo or real trading.
+          Each contract keeps its own signal settings. Stake, open trades, loss limit, cooldown, and exposure come from the Risk tab. Enabling a strategy does not arm demo or real trading.
         </p>
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
           <Stat label="Strategies" value={String(CONTRACTS.length)} />

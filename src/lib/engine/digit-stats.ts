@@ -18,27 +18,61 @@ export function wilsonInterval(hits: number, n: number, z = 1.64): { p: number; 
 
 /**
  * Consecutive ticks are not independent draws.
- * Positive lag-1 correlation shrinks the sample. A one-sided run counts as one effective observation.
- * The point estimate is unchanged. The interval gets wider. The count is never inflated.
+ * Bartlett adjustment through lag 5, using both positive and negative autocorrelation.
+ * The adjusted count shrinks when dependence makes the mean less precise.
+ * It is never raised above the raw count when negative autocorrelation would do that.
+ * A one-sided run with no digit diversity counts as one effective observation.
+ * If the contract indicator never changes but at least three last digits appear, the raw count is kept.
+ * A zero-variance indicator has no correlation to estimate, and that count is not increased past the raw sample.
+ * Overlapping blocks are not used. This does not remove all dependence.
  */
-export function effectiveSample(flags: boolean[]): { n: number; hits: number; nEff: number; rho: number } {
+export const DEPENDENCE_LIMIT =
+  "Dependence uses a Bartlett autocorrelation adjustment through lag 5. Positive correlation shrinks the effective sample. Negative correlation does not add observations, and the adjusted count never exceeds the raw count. Overlapping blocks are not counted as extra samples. A contract result that never changes is one observation unless the last digits themselves keep changing, in which case the raw count is kept and still not increased. This does not remove all dependence, and a shift in the distribution can still be misread as one series.";
+
+const MAX_DEPENDENCE_LAG = 5;
+
+export function effectiveSample(flags: boolean[], distinct = 0): { n: number; hits: number; nEff: number; rho: number } {
   const n = flags.length;
   const hits = flags.reduce((sum, flag) => sum + (flag ? 1 : 0), 0);
   if (n < 3) return { n, hits, nEff: Math.max(0, n), rho: 0 };
   const mean = hits / n;
-  if (mean === 0 || mean === 1) return { n, hits, nEff: 1, rho: 1 };
-  let num = 0;
-  let den = 0;
-  for (let i = 0; i < n; i++) {
-    const delta = (flags[i] ? 1 : 0) - mean;
-    den += delta * delta;
-    if (i > 0) num += delta * ((flags[i - 1] ? 1 : 0) - mean);
+  if (mean === 0 || mean === 1) {
+    const moving = distinct >= 3;
+    return { n, hits, nEff: moving ? n : 1, rho: moving ? 0 : 1 };
   }
-  const raw = den === 0 ? 0 : num / den;
-  const rho = Math.max(-0.99, Math.min(0.99, raw));
-  // Negative correlation must not be turned into extra evidence.
-  const shrunk = rho > 0 ? (n * (1 - rho)) / (1 + rho) : n;
-  return { n, hits, nEff: Math.min(n, Math.max(1, shrunk)), rho };
+  const rhos = autocorrelations(
+    flags.map((flag) => (flag ? 1 : 0)),
+    Math.min(MAX_DEPENDENCE_LAG, n - 2),
+  );
+  const rho = rhos[0] ?? 0;
+  let inflation = 1;
+  for (let lag = 1; lag <= rhos.length; lag += 1) {
+    const value = rhos[lag - 1] ?? 0;
+    inflation += 2 * (1 - lag / n) * value;
+  }
+  // A net negative factor would claim extra evidence. Cap it at the raw sample instead.
+  const nEff = inflation <= 1 ? n : Math.min(n, Math.max(1, n / inflation));
+  return { n, hits, nEff, rho };
+}
+
+function autocorrelations(values: number[], maxLag: number): number[] {
+  const n = values.length;
+  if (n < 3 || maxLag < 1) return [];
+  const mean = values.reduce((sum, value) => sum + value, 0) / n;
+  let den = 0;
+  const centered = values.map((value) => {
+    const delta = value - mean;
+    den += delta * delta;
+    return delta;
+  });
+  if (den === 0) return Array.from({ length: maxLag }, () => 1);
+  const out: number[] = [];
+  for (let lag = 1; lag <= maxLag; lag += 1) {
+    let num = 0;
+    for (let index = lag; index < n; index += 1) num += centered[index] * centered[index - lag];
+    out.push(Math.max(-0.99, Math.min(0.99, num / den)));
+  }
+  return out;
 }
 
 export function wilsonFromFlags(flags: boolean[], z = 1.64): { p: number; lo: number; hi: number; n: number; hits: number; nEff: number; rho: number } {

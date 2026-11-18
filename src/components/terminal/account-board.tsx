@@ -30,7 +30,7 @@ export function AccountBoard() {
   const rate = accountId ? winRate(journal, accountId) : null;
   const streak = accountId ? scopedLossStreak(journal, useDesk.getState().sessionResetAt ?? 0, accountId) : null;
   const realArmed = Boolean(account?.account_type === "real" && armReal && armedAccountId === account.account_id);
-  const auth = !account ? "Not signed in" : account.account_type === "real" ? (realArmed ? "Real armed" : "Real disarmed") : armDemo ? "Demo armed" : "Demo disarmed";
+  const auth = !account ? "Not signed in" : account.account_type === "real" ? (realArmed ? "Real started" : "Idle") : armDemo ? "Demo started" : "Idle";
   const connection = !account ? "No account" : trading === "live" ? "Trading connected" : trading === "connecting" ? "Trading reconnecting" : "Trading disconnected";
   const feedLabel = feed === "live" ? "Market live" : feed === "connecting" ? "Market reconnecting" : "Market down";
 

@@ -203,7 +203,7 @@ test("sticky and shifting digits are not called an edge, and each contract keeps
   assert.equal(over.finalSize, 40);
   assert.equal(over.validationPeriods, 3);
   assert.equal(over.minOos, 40);
-  assert.equal(over.intervalZ, 1.64);
+  assert.equal(over.intervalZ, 1.96);
   assert.equal(validateProfile(over).length, 0);
   assert.ok(fieldsFor("DIGITMATCH").includes("trainSize"));
   assert.ok(fieldsFor("DIGITEVEN").includes("minOos"));

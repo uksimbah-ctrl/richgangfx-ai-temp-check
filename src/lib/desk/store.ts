@@ -79,7 +79,8 @@ export type DeskView =
   | "chart"
   | "alerts"
   | "help"
-  | "settings";
+  | "settings"
+  | "bulk";
 
 type DeskState = {
   booted: boolean;
@@ -135,6 +136,10 @@ type DeskState = {
   equityPeak: number | null;
   /** Observation reasons keyed by account id, then module id. Not shared across accounts. */
   moduleNotes: Record<string, Record<string, string>>;
+  /** Latest proposal step for the selected digit contract. Not saved. */
+  proposalNote: string | null;
+  /** Latest reason a qualified signal did not buy. Not saved. */
+  executionNote: string | null;
   lastLossAt: number | null;
   phase: number;
   busy: string | null;
@@ -187,6 +192,8 @@ export const useDesk = create<DeskState>(() => ({
   equityPeaks: {},
   equityPeak: null,
   moduleNotes: {},
+  proposalNote: null,
+  executionNote: null,
   lastLossAt: null,
   phase: 0,
   busy: null,

@@ -3,15 +3,16 @@ import { SimpleControl } from "@/components/terminal/simple-control";
 import { ModulesPanel } from "@/components/terminal/modules-panel";
 import { MartingaleControl } from "@/components/terminal/martingale";
 import { DigitInsight } from "@/components/terminal/digit-insight";
+import { DigitDiagnostics } from "@/components/terminal/digit-diagnostics";
+import { BulkTrader } from "@/components/bulk/bulk-trader";
 import { DeskHome } from "@/components/terminal/desk-home";
 import { JournalPanel } from "@/components/terminal/journal-panel";
-import { TradeReadout } from "@/components/terminal/trade-readout";
 import { HelpDesk, MarketChart, Notifications } from "@/components/terminal/desk-pages";
 import { useEffect, useMemo, useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 import { Line, LineChart as LineChart$1, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { signed, quoteText, money, pct, clock } from "@/lib/format";
-import { digitCounts, lastDigit, digitChoices } from "@/lib/engine/math";
+import { lastDigit, digitChoices } from "@/lib/engine/math";
 import { CONTRACTS, CONTRACT_BY_TYPE, FAMILY_LABEL, contractName } from "@/lib/engine/catalog";
 import { DEFAULT_RISK, researchProfile } from "@/lib/engine/risk";
 import { useDesk } from "@/lib/desk/store";
@@ -114,73 +115,13 @@ function DeskViews() {
 	if (view === "chart") return /* @__PURE__ */ jsx(MarketChart, {});
 	if (view === "alerts") return /* @__PURE__ */ jsx(Notifications, {});
 	if (view === "help") return /* @__PURE__ */ jsx(HelpDesk, {});
+	if (view === "bulk") return /* @__PURE__ */ jsx(BulkTrader, {});
 	return /* @__PURE__ */ jsx(Settings$1, {});
 }
 function Overview() {
-	const opportunities = useDesk((s) => s.opportunities);
-	const plans = useDesk((s) => s.plans);
-	const feed = useDesk((s) => s.feed);
-	const feedError = useDesk((s) => s.feedError);
-	const mode = useDesk((s) => s.mode);
-	const tradeType = useDesk((s) => s.tradeType);
-	const focus = useDesk((s) => s.focus);
-	const quotes = useDesk((s) => s.quotes);
-	const ticks = useDesk((s) => s.ticks);
-	const pricing = plans.filter((plan) => plan.type === tradeType && plan.status === "pricing").length;
-	const aside = plans.filter((plan) => plan.type === tradeType && plan.status === "stand-aside").length;
-	const warming = plans.filter((plan) => plan.type === tradeType && plan.status === "warming").length;
-	const samples = focus.map((symbol) => ticks[symbol]?.length ?? 0);
-	const deepest = samples.length ? Math.max(...samples) : 0;
-	const bot = tradeType ? CONTRACT_BY_TYPE.get(tradeType) : void 0;
 	return /* @__PURE__ */ jsxs("div", {
 		className: "grid gap-3",
-		children: [
-			/* @__PURE__ */ jsx(DeskHome, {}),
-			/* @__PURE__ */ jsx(DigitBoard, {}),
-			/* @__PURE__ */ jsxs(Panel, {
-				title: "Desk",
-				children: [
-					/* @__PURE__ */ jsx("p", {
-						className: "text-sm text-pretty text-muted",
-						children: feed === "live" ? `Watching ${focus.length} markets, deepest sample ${deepest} ticks. ${pricing} setups ready to price, ${warming} still warming, ${aside} standing aside. Mode is ${mode}. The bot ${bot ? `trades ${bot.name} only` : "will not buy until you pick a contract"}.` : feedError || "Connecting to the Deriv public market feed."
-					}),
-					/* @__PURE__ */ jsx("div", {
-						className: "mt-3",
-						children: /* @__PURE__ */ jsx(Btn, {
-							kind: bot ? "gold" : "ghost",
-							onClick: () => setView("auto"),
-							children: bot ? `Bot contract · ${bot.name}` : "Choose bot contract"
-						})
-					}),
-					/* @__PURE__ */ jsx("div", {
-						className: "mt-3 grid gap-2 sm:grid-cols-2",
-						children: focus.map((symbol) => {
-							const tick = quotes[symbol];
-							return /* @__PURE__ */ jsxs("div", {
-								className: "flex items-center justify-between rounded-md border border-line px-3 py-2",
-								children: [/* @__PURE__ */ jsx("span", {
-									className: "font-mono text-sm",
-									children: symbol
-								}), /* @__PURE__ */ jsx("span", {
-									className: "font-mono text-sm tabular-nums text-gold",
-									children: tick ? quoteText(tick.quote, tick.pip_size) : "—"
-								})]
-							}, symbol);
-						})
-					})
-				]
-			}),
-			/* @__PURE__ */ jsx(Panel, {
-				title: "Latest quotes",
-				children: !tradeType ? /* @__PURE__ */ jsx("p", {
-					className: "text-sm text-muted",
-					children: "Pick the contract on Auto. The scan follows that strategy only."
-				}) : opportunities.filter((row) => row.type === tradeType).length === 0 ? /* @__PURE__ */ jsx("p", {
-					className: "text-sm text-muted",
-					children: mode === "scanner" ? "Scanner mode does not request prices. Switch to Signals to pull live proposals." : "Waiting for a quote on the selected strategy."
-				}) : /* @__PURE__ */ jsx(OppList, { rows: opportunities.filter((row) => row.type === tradeType).slice(0, 4) })
-			})
-		]
+		children: [/* @__PURE__ */ jsx(DeskHome, {}), /* @__PURE__ */ jsx(DigitBoard, {})]
 	});
 }
 function Scanner() {
@@ -403,12 +344,10 @@ function DigitBoard() {
 	const series = active ? ticks[active] ?? [] : [];
 	const places = active ? pip[active] ?? quotes[active]?.pip_size ?? 2 : 2;
 	const prices = series.map((point) => point.q);
-	const counts = digitCounts(prices, places);
 	const sample = prices.length;
 	const last = sample ? lastDigit(prices[prices.length - 1], places) : null;
 	const recent = prices.slice(-30).map((price) => lastDigit(price, places));
 	const choices = tradeType ? digitChoices(tradeType) : null;
-	const max = Math.max(1, ...counts);
 	return /* @__PURE__ */ jsxs(Panel, {
 		title: "Digits",
 		children: [
@@ -479,77 +418,16 @@ function DigitBoard() {
 					}, digit);
 				})
 			}),
-			/* @__PURE__ */ jsx("p", {
+			choices == null || (digitPick != null && choices.includes(digitPick)) ? null : /* @__PURE__ */ jsx("p", {
 				className: "mt-2 text-sm text-muted",
-				children: choices == null ? "Even and Odd have no barrier. The engine uses the fair chance and the sample." : digitPick == null ? tradeType === "DIGITMATCH" || tradeType === "DIGITDIFF" ? "Pick a digit from 0 to 9. Matches and Differs will not trade until you do." : "SELECT A BARRIER, or turn on Auto barrier selection for this contract. A blank digit is not filled in." : choices.includes(digitPick) ? `${CONTRACT_BY_TYPE.get(tradeType ?? "")?.name ?? "Contract"} uses digit ${digitPick}.` : `Digit ${digitPick} is not offered on this contract.`
+				children: digitPick == null ? tradeType === "DIGITMATCH" || tradeType === "DIGITDIFF" ? "Pick a digit from 0 to 9." : "Select a barrier, or turn on auto barrier for this contract." : `Digit ${digitPick} is not offered on this contract.`
 			}),
 			jsx(DigitInsight, {}),
-			/* @__PURE__ */ jsx("div", {
-				className: "mt-4 min-w-0",
-				children: /* @__PURE__ */ jsxs("table", {
-					className: "w-full text-left text-sm",
-					children: [/* @__PURE__ */ jsx("thead", { children: /* @__PURE__ */ jsxs("tr", {
-						className: "text-xs tracking-wide text-muted uppercase",
-						children: [
-							/* @__PURE__ */ jsx("th", {
-								className: "py-1 pr-3 font-medium",
-								children: "Digit"
-							}),
-							/* @__PURE__ */ jsx("th", {
-								className: "py-1 pr-3 font-medium",
-								children: "Hits"
-							}),
-							/* @__PURE__ */ jsx("th", {
-								className: "py-1 pr-3 font-medium",
-								children: "Share"
-							}),
-							/* @__PURE__ */ jsx("th", {
-								className: "py-1 font-medium",
-								children: " "
-							})
-						]
-					}) }), /* @__PURE__ */ jsx("tbody", { children: counts.map((count, digit) => /* @__PURE__ */ jsxs("tr", {
-						className: digit === digitPick ? "text-gold" : digit === last ? "text-fg" : "text-muted",
-						children: [
-							/* @__PURE__ */ jsx("td", {
-								className: "py-1 pr-3 font-mono",
-								children: digit
-							}),
-							/* @__PURE__ */ jsx("td", {
-								className: "py-1 pr-3 font-mono tabular-nums",
-								children: count
-							}),
-							/* @__PURE__ */ jsx("td", {
-								className: "py-1 pr-3 font-mono tabular-nums",
-								children: sample ? pct(count / sample) : "—"
-							}),
-							/* @__PURE__ */ jsx("td", {
-								className: "w-2/5 py-1",
-								children: /* @__PURE__ */ jsx("div", {
-									className: "h-2 rounded-sm bg-bg",
-									children: /* @__PURE__ */ jsx("div", {
-										className: "h-2 rounded-sm bg-gold",
-										style: { width: `${count / max * 100}%` }
-									})
-								})
-							})
-						]
-					}, digit)) })]
-				})
-			})
+			jsx(DigitDiagnostics, {})
 		]
 	});
 }
-var QUICK_CONTRACTS = [
-	"DIGITEVEN",
-	"DIGITODD",
-	"DIGITMATCH",
-	"DIGITDIFF",
-	"DIGITOVER",
-	"DIGITUNDER",
-	"CALL",
-	"PUT"
-];
+var QUICK_CONTRACTS = ["CALL", "PUT"];
 function ContractPicker() {
 	const tradeType = useDesk((s) => s.tradeType);
 	const enabled = useDesk((s) => s.enabled);
@@ -643,8 +521,8 @@ function idleReason(mode, tradeType, trading, emergency, account, armDemo, armRe
 	}
 	if (mode !== "auto") return "Switch to Full auto when you want the bot to buy.";
 	if (emergency) return "Emergency stop is on. New orders are blocked.";
-	if (account.account_type === "demo" && !armDemo) return "Arm demo. The bot will not buy until you do. Demo arming does not authorize real money.";
-	if (account.account_type === "real" && (!armReal || armedAccountId !== account.account_id)) return "Real trading is DISARMED for this account. Type ARM REAL before any real order.";
+	if (account.account_type === "demo" && !armDemo) return "Press Start. The desk will not buy until you do.";
+	if (account.account_type === "real" && (!armReal || armedAccountId !== account.account_id)) return "Real trading is stopped. Type START REAL before any real order.";
 	return "The bot is watching the selected contract.";
 }
 function Auto() {
@@ -668,13 +546,11 @@ function Auto() {
 	const plans = useDesk((s) => s.plans);
 	const selectedPlans = tradeType ? plans.filter((plan) => plan.type === tradeType) : [];
 	const readyPlans = selectedPlans.filter((plan) => plan.status === "pricing");
-	const waitingPlan = selectedPlans.find((plan) => plan.status !== "pricing");
-	const signalLine = !tradeType ? "" : readyPlans.length > 0 ? `Signal on ${readyPlans.map((plan) => plan.symbol).slice(0, 3).join(", ")}.` : waitingPlan ? waitingPlan.note : "Waiting for this contract's rule.";
+	const signalLine = !tradeType ? "" : readyPlans.length > 0 ? `Signal on ${readyPlans.map((plan) => plan.symbol).slice(0, 3).join(", ")}.` : "No entry on this contract yet.";
 	return /* @__PURE__ */ jsxs("div", {
 		className: "grid gap-3",
 		children: [
 			/* @__PURE__ */ jsx(DigitBoard, {}),
-			/* @__PURE__ */ jsx(TradeReadout, {}),
 			/* @__PURE__ */ jsx(ContractPicker, {}),
 			/* @__PURE__ */ jsxs(Panel, {
 				title: "Trading mode",
@@ -735,14 +611,14 @@ function Auto() {
 				})]
 			}),
 			/* @__PURE__ */ jsxs(Panel, {
-				title: "Arm switches",
+				title: "Start",
 				children: [
 					/* @__PURE__ */ jsxs("div", {
 						className: "flex flex-wrap gap-2",
 						children: [/* @__PURE__ */ jsx(Btn, {
 							kind: armDemo ? "gold" : "ghost",
 							onClick: () => setArmDemo(!armDemo),
-							children: armDemo ? "Demo armed" : "Arm demo"
+							children: armDemo ? "Started" : "Start"
 						}), /* @__PURE__ */ jsx(Btn, {
 							kind: "ghost",
 							onClick: () => resetLimits(),
@@ -756,17 +632,17 @@ function Auto() {
 					/* @__PURE__ */ jsxs("div", {
 						className: "mt-3 grid gap-2",
 						children: [/* @__PURE__ */ jsx(Field, {
-							label: "Type ARM REAL to allow real-money orders",
+							label: "Type START REAL to allow real-money orders",
 							children: /* @__PURE__ */ jsx(TextInput, {
 								value: phrase,
 								onChange: (e) => setRealPhrase(e.target.value),
-								placeholder: "ARM REAL",
+								placeholder: "START REAL",
 								autoCapitalize: "characters"
 							})
 						}), /* @__PURE__ */ jsx(Btn, {
 							kind: armReal ? "danger" : "ghost",
 							onClick: () => setArmReal(!armReal),
-							children: armReal && account?.account_type === "real" && armedAccountId === account.account_id ? "Real armed — click to disarm" : "Arm real account"
+							children: armReal && account?.account_type === "real" && armedAccountId === account.account_id ? "Started — click to stop" : "Start real account"
 						})]
 					}),
 					emergency ? /* @__PURE__ */ jsx("p", {
@@ -775,14 +651,11 @@ function Auto() {
 					}) : null
 				]
 			}),
-			/* @__PURE__ */ jsx(Panel, {
+			log.length === 0 ? null : /* @__PURE__ */ jsx(Panel, {
 				title: "Engine log",
-				children: log.length === 0 ? /* @__PURE__ */ jsx("p", {
-					className: "text-sm text-muted",
-					children: "No events yet."
-				}) : /* @__PURE__ */ jsx("ul", {
+				children: /* @__PURE__ */ jsx("ul", {
 					className: "grid gap-1",
-					children: log.slice(0, 20).map((line, i) => /* @__PURE__ */ jsxs("li", {
+					children: log.slice(0, 3).map((line, i) => /* @__PURE__ */ jsxs("li", {
 						className: "font-mono text-xs",
 						children: [/* @__PURE__ */ jsxs("span", {
 							className: "text-muted",

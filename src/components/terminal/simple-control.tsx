@@ -16,7 +16,8 @@ const GROUPS: Array<[string, string[]]> = [
   ["Other", ["RESETCALL", "RESETPUT", "ASIANU", "ASIAND", "TICKHIGH", "TICKLOW", "VANILLALONGCALL", "VANILLALONGPUT", "LBFLOATCALL", "LBFLOATPUT", "LBHIGHLOW", "MULTUP", "MULTDOWN", "ACCU", "RUNHIGH", "RUNLOW"]],
 ];
 
-const BASIC = ["enabled", "stake", "duration", "durationUnit", "barrier", "cooldownSec", "maxDailyLoss", "maxOpen"] as const;
+const BASIC = ["enabled", "duration", "durationUnit", "barrier"] as const;
+const DESK_RISK = new Set(["stake", "maxStake", "maxOpen", "cooldownSec", "dailyTradeLimit", "maxDailyLoss", "maxConsecutiveLosses", "maxExposure"]);
 
 const LABEL: Record<string, string> = {
   stake: "Stake",
@@ -74,7 +75,7 @@ export function SimpleControl() {
     setDraft(useDesk.getState().profiles[type] ?? defaultProfile(type));
   }, [type]);
 
-  const relevant = fieldsFor(type);
+  const relevant = fieldsFor(type).filter((field) => !DESK_RISK.has(field));
   const basic = BASIC.filter((field) => relevant.includes(field));
   const extra = relevant.filter((field) => !BASIC.includes(field as (typeof BASIC)[number]));
   const meta = CONTRACT_BY_TYPE.get(type);
@@ -135,7 +136,7 @@ export function SimpleControl() {
       <section className="rounded-md border border-line bg-surface p-3">
         <h2 className="text-sm font-medium">Control</h2>
         <p className="mt-1 text-sm text-pretty text-muted">
-          Pick a contract, set the stake and the rule, then save. Nothing here turns on real-money trading.
+          Pick a contract and set the signal. Stake, open trades, loss limit, and cooldown come from the Risk tab. Nothing here turns on real-money trading.
         </p>
         <button
           type="button"

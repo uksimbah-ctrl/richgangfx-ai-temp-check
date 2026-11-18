@@ -38,7 +38,7 @@ const FEATURES = [
   {
     icon: Wallet,
     title: "Demo and real accounts",
-    copy: "OAuth returns the accounts on the token. Demo and real stay separate, and real orders need you to type ARM REAL.",
+    copy: "OAuth returns the accounts on the token. Demo and real stay separate, and real orders need you to type START REAL.",
   },
   {
     icon: History,
@@ -143,9 +143,9 @@ export function Landing() {
             ))}
           </div>
           <div className="mt-4 rounded-md border border-gold/40 bg-surface/70 p-4">
-            <h3 className="font-medium text-gold">Not a separate button</h3>
+            <h3 className="font-medium text-gold">You start it</h3>
             <p className="mt-2 text-sm text-pretty text-muted">
-              There is no extra Start, Pause, or Resume control. Full auto plus Arm demo or Arm real starts orders.
+              You press Start. The desk does not start itself. Full auto plus Start is what places orders.
               Stop is the emergency stop. Duration is taken from the market, not a field you type. Indicators are
               inside the model and are not tuned from the page. A general stop-loss and take-profit are not offered;
               multipliers use a stop equal to the stake. A “number of trades” limit is not offered — the open-trade
@@ -158,7 +158,7 @@ export function Landing() {
           <div className="mx-auto grid max-w-6xl gap-3 px-4 py-14 md:grid-cols-3">
             {[
               ["1", "Create or connect", "Open a Deriv account, or sign in with the Deriv authorization page. This site never asks for your Deriv password."],
-              ["2", "Set the desk", "Pick the contract and, for digits, the digit. Set stake and risk. Arm demo before any order."],
+              ["2", "Set the desk", "Pick the contract and, for digits, the digit. Set stake and risk. Press Start before any order."],
               ["3", "Analyze and trade", "Signals prices the book. Full auto buys only the contract you selected, inside the risk gates."],
             ].map(([step, title, copy]) => (
               <article key={step} className="rounded-md border border-line bg-surface p-4">
@@ -184,7 +184,7 @@ export function Landing() {
             <ul className="mt-4 grid gap-2 text-sm text-muted sm:grid-cols-2">
               <li>Sign-in uses Deriv’s authorization page and the existing callback on this site.</li>
               <li>Your Deriv password is never requested or stored here.</li>
-              <li>Demo and real accounts are labeled, and real orders need the phrase ARM REAL.</li>
+              <li>Demo and real accounts are labeled, and real orders need the phrase START REAL.</li>
               <li>Statistics on the desk come from trades this session recorded, not from a made-up win rate.</li>
               <li>Trading can lose money. Nothing here guarantees a profit.</li>
             </ul>
@@ -202,7 +202,7 @@ export function Landing() {
             <div className="mt-4 grid gap-3">
               {[
                 ["Does this guarantee a win rate?", "No. Win rate on the desk is counted only from contracts this desk bought and that have settled."],
-                ["Can it trade real money by itself?", "No. Real orders stay off until you type ARM REAL and arm the real account."],
+                ["Can it trade real money by itself?", "No. Real orders stay off until you type START REAL and start the real account yourself."],
                 ["What is a batch?", "A batch repeats one signal only, then waits until those contracts settle. One-at-a-time places a single contract."],
                 ["Where is my Deriv password?", "It is never asked for. Sign-in uses Deriv’s own page."],
               ].map(([q, a]) => (

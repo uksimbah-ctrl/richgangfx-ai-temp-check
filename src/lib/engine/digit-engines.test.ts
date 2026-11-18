@@ -149,7 +149,7 @@ test("digit settings are saved per contract and do not rewrite another contract"
   assert.equal(match.stake, 1);
   assert.equal(match.minSample, 20);
   assert.equal(match.minEffective, 40);
-  assert.equal(match.intervalZ, 1.64);
+  assert.equal(match.intervalZ, 1.96);
   assert.equal(match.walkForward, true);
   assert.equal(match.method, "beta-binomial");
   assert.equal(match.duration, 1);

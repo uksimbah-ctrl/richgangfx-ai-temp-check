@@ -117,9 +117,9 @@ export function HelpDesk() {
         <h2 className="text-sm font-medium">Help</h2>
         <ol className="mt-3 grid gap-2 text-sm text-muted">
           <li>1. Sign in on Account. Demo and real stay separate.</li>
-          <li>2. On Live Trading, pick one contract. Arm demo before any order.</li>
+          <li>2. On Live Trading, pick one contract. Press Start before any order.</li>
           <li>3. Leave entries at 1, or choose a batch. A batch stays on that signal until it settles.</li>
-          <li>4. Real orders need the words ARM REAL. Stop blocks new entries.</li>
+          <li>4. Real orders need the words START REAL. The desk does not start itself. Stop blocks new entries.</li>
         </ol>
         <div className="mt-3 flex flex-wrap gap-2">
           <button type="button" onClick={() => setView("auto")} className="min-h-11 rounded-md bg-gold px-3 text-sm font-medium text-gold-ink">

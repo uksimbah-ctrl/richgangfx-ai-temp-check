@@ -83,12 +83,12 @@ test("a missing settlement profit stays open", () => {
 });
 
 test("real arming is bound to one account, clears on a switch, and is never restored", () => {
-  const armed = armRealDecision({ phrase: "ARM REAL", account: { account_id: "CR1", account_type: "real" } });
+  const armed = armRealDecision({ phrase: "START REAL", account: { account_id: "CR1", account_type: "real" } });
   assert.equal(armed.ok, true);
   assert.equal(armed.armedAccountId, "CR1");
   const wrongPhrase = armRealDecision({ phrase: "arm real", account: { account_id: "CR1", account_type: "real" } });
   assert.equal(wrongPhrase.ok, false);
-  const demo = armRealDecision({ phrase: "ARM REAL", account: { account_id: "VRTC1", account_type: "demo" } });
+  const demo = armRealDecision({ phrase: "START REAL", account: { account_id: "VRTC1", account_type: "demo" } });
   assert.equal(demo.ok, false);
   assert.match(demo.reason, /Demo arming does not authorize/);
   assert.deepEqual(armAfterAccountChange(), { armReal: false, armedAccountId: null });

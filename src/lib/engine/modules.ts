@@ -1,5 +1,5 @@
-import { FAMILY_LABEL, type Family } from "./catalog.ts";
-import { NO_VERIFIED_EDGE } from "./digit-engines.ts";
+import { CONTRACT_BY_TYPE, FAMILY_LABEL, type Family } from "./catalog.ts";
+import { NO_VERIFIED_EDGE, NO_VERIFIED_OOS } from "./digit-engines.ts";
 import { adx, atr, barsFromTicks, bollinger, emaLast, macdHist, rsi } from "./indicators.ts";
 import { digitCounts, digitChiSquare, digitWins, expectedValue, fairDigit, impliedProbability, lastDigit, sampleStd, tickDeltas } from "./math.ts";
 import {
@@ -203,7 +203,23 @@ export type DigitGateOptions = {
   persist?: boolean;
   stake?: number | null;
   payout?: number | null;
+  minSample?: number;
+  lookback?: number;
 };
+
+/** Modules that are allowed to open this contract. Ensemble and regime never count. */
+export function activeEntryModules(
+  family: Family,
+  contractType: string,
+  configs: Record<string, ModuleConfig> | undefined,
+): ModuleId[] {
+  if (!configs) return [];
+  return MODULE_IDS.filter((id) => {
+    if (id === "ensemble" || id === "regime") return false;
+    const cfg = configs[id];
+    return Boolean(cfg?.enabled && cfg.status === "active" && supportsContract(id, family, contractType));
+  });
+}
 
 /** Only the whitelist may open a trade. Legacy contract rules are not an entry. */
 export function approvedEntry(
@@ -216,11 +232,7 @@ export function approvedEntry(
   options?: DigitGateOptions,
 ): { ok: boolean; reason: string; readings: ModuleReading[]; agreed: string[] } {
   if (!configs) return { ok: false, reason: "No approved strategy is loaded.", readings: [], agreed: [] };
-  const enabled = MODULE_IDS.filter((id) => {
-    if (id === "ensemble" || id === "regime") return false;
-    const cfg = configs[id];
-    return Boolean(cfg?.enabled && cfg.status === "active" && supportsContract(id, family, contractType));
-  });
+  const enabled = activeEntryModules(family, contractType, configs);
   if (enabled.length === 0) {
     const selectedDigit = contractType === "DIGITMATCH" || contractType === "DIGITDIFF";
     return {
@@ -266,6 +278,27 @@ export function approvedEntry(
     }
   }
   return { ok: true, reason, readings, agreed };
+}
+
+/** Entry strategies that can authorize this contract. Advisory and retired rules are left off. */
+export function bestStrategies(contractType: string): ModuleId[] {
+  const family = CONTRACT_BY_TYPE.get(contractType)?.family;
+  if (!family) return [];
+  return MODULE_IDS.filter((id) => id !== "ensemble" && id !== "regime" && supportsContract(id, family, contractType));
+}
+
+/** Turn on only the strategies for the selected contract. */
+export function applyStrategyChoice(
+  modules: Record<string, ModuleConfig>,
+  contractType: string | null,
+): Record<ModuleId, ModuleConfig> {
+  const chosen = new Set(contractType ? bestStrategies(contractType) : []);
+  const next = { ...modules } as Record<ModuleId, ModuleConfig>;
+  for (const id of MODULE_IDS) {
+    const row = next[id] ?? defaultModule(id);
+    next[id] = { ...row, enabled: chosen.has(id) };
+  }
+  return next;
 }
 
 function supportsContract(id: ModuleId, family: Family, contractType: string): boolean {
@@ -761,6 +794,85 @@ function streakSide(
   };
 }
 
+function contractEngineCard(
+  quotes: number[],
+  pip: number,
+  contractType: string,
+  barrier: string,
+  options: (DigitGateOptions & { ask?: number | null }) | undefined,
+  idle: {
+    sample: number;
+    last: number | null;
+    counts: number[];
+    even: number;
+    odd: number;
+    streak: string;
+    contract: string;
+    fair: string;
+    active: string;
+    status: string;
+    reason: string;
+    estimate: string;
+    observed: string;
+    interval: string;
+    hits: string;
+    effective: string;
+    breakEven: string;
+    expectedReturn: string;
+    ask: string;
+    payout: string;
+    netProfit: string;
+    loss: string;
+    ratio: string;
+  },
+  money: { ask: string; payout: string },
+) {
+  const minSample = Math.max(20, options?.minSample ?? 20);
+  const study = studyContract({
+    contract: contractType,
+    quotes,
+    pip,
+    barrier,
+    minSample,
+    minConfidence: 0.5,
+    strategy: contractType,
+    lookback: Math.max(20, options?.lookback ?? 40),
+    minEffective: options?.minEffective,
+    z: options?.z,
+    persist: options?.persist,
+    stake: options?.stake,
+    payout: options?.payout,
+  });
+  const ready = study.sample >= minSample && study.nEff > 0;
+  const priced = moneyText({
+    stake: options?.stake,
+    payout: options?.payout,
+    ask: options?.ask,
+    probability: ready ? study.p : null,
+    breakEven: study.breakEven,
+    expectedReturn: ready ? study.expectedReturn : null,
+  });
+  const status = study.status === "yes" ? "Qualified" : study.status === "wait" ? "WAIT" : "Not qualified";
+  return {
+    ...idle,
+    active: "Contract engine",
+    status,
+    reason: markEvidence(study.reason),
+    estimate: ready ? pct(study.p) : "—",
+    observed: ready ? pct(study.observed) : "—",
+    interval: ready ? `${pct(study.lo)} – ${pct(study.hi)}` : "—",
+    hits: ready ? `${study.hits}/${study.sample}` : "—",
+    effective: ready ? String(Math.round(study.nEff)) : "—",
+    breakEven: priced.breakEven,
+    expectedReturn: priced.expectedReturn,
+    netProfit: priced.netProfit,
+    loss: priced.loss,
+    ratio: priced.ratio,
+    ask: money.ask,
+    payout: money.payout,
+  };
+}
+
 export function explainDigits(
   quotes: number[],
   pip: number,
@@ -819,7 +931,7 @@ export function explainDigits(
   if (!configs || !contractType) return idle;
   const order = ["statistical", "selectedDigit", "rolling", "barrierProb", "parity", "walkForward"] as const;
   const enabled = order.filter((id) => configs[id]?.enabled && configs[id]?.status === "active" && supportsContract(id, "digit", contractType));
-  if (enabled.length === 0) return { ...idle, reason: markEvidence("No approved digit strategy is turned on for this contract. A streak cannot open it. WAIT.") };
+  if (enabled.length === 0) return contractEngineCard(quotes, pip, contractType, barrier, options, idle, money);
   const parts: string[] = [];
   let chosen: {
     name: string;
@@ -947,7 +1059,8 @@ function moneyText(options?: { stake?: number | null; payout?: number | null; as
 }
 
 function markEvidence(reason: string): string {
-  return reason.includes(NO_VERIFIED_EDGE) ? reason : `${reason} ${NO_VERIFIED_EDGE}`;
+  if (reason.includes(NO_VERIFIED_OOS) || reason.includes(NO_VERIFIED_EDGE) || reason.includes("Qualified because") || reason.includes("Qualified for an entry")) return reason;
+  return `${reason} ${NO_VERIFIED_EDGE}`;
 }
 
 function fairText(contract: string, barrier: string): string {

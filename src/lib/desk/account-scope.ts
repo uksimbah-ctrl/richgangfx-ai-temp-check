@@ -54,8 +54,8 @@ export function armRealDecision(input: {
   phrase: string;
   account: { account_id: string; account_type: "demo" | "real" } | null;
 }): { ok: boolean; armedAccountId: string | null; reason: string } {
-  if (input.phrase.trim() !== "ARM REAL") {
-    return { ok: false, armedAccountId: null, reason: "Type ARM REAL before arming a real-money account." };
+  if (input.phrase.trim() !== "START REAL") {
+    return { ok: false, armedAccountId: null, reason: "Type START REAL before starting a real-money account." };
   }
   if (!input.account || input.account.account_type !== "real") {
     return {
@@ -111,7 +111,7 @@ export function realBuyAllowed(input: {
   if (input.accountType !== "real") return { ok: true, reason: "" };
   if (!hasAccountId(input.accountId)) return { ok: false, reason: "No real account is selected." };
   if (!input.armReal || input.armedAccountId !== input.accountId) {
-    return { ok: false, reason: "Real trading is not armed for this account. Type ARM REAL again." };
+    return { ok: false, reason: "Real trading is not started for this account. Type START REAL again." };
   }
   return { ok: true, reason: "" };
 }

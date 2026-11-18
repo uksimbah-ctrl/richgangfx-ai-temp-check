@@ -2,12 +2,14 @@ import { bestDigitBarrier } from "./digits.ts";
 import { adjustedZ, digitChoices, digitWins, expectedValue, fairDigit, impliedProbability, lastDigit } from "./math.ts";
 import {
   clearsBaseline,
+  DEPENDENCE_LIMIT,
   digitFrequencies,
   effectiveSample,
   pct,
   predictionLabel,
   wilsonInterval,
 } from "./digit-stats.ts";
+import { confidenceLabel } from "./profiles.ts";
 
 /**
  * Weak baseline prior. Strength 20 is ten times a single digit's fair weight and is not evidence of an edge.
@@ -20,6 +22,10 @@ export const NO_VERIFIED_EDGE = "NO VERIFIED EDGE — INSUFFICIENT EVIDENCE.";
 export const NO_VERIFIED_OOS = "NO VERIFIED EDGE — INSUFFICIENT OUT-OF-SAMPLE EVIDENCE.";
 /** Twelve out-of-sample decisions are not enough to call a result supported. */
 export const MIN_OOS_EVIDENCE = 40;
+/** 95% equal-tail interval. New research settings start here. A saved contract keeps its own value. */
+export const RESEARCH_Z = 1.96;
+/** Live entries use this wider band. The report still shows the contract's own interval. */
+const ENTRY_Z = 1.28;
 
 export const PRIOR_STRENGTH = 20;
 
@@ -42,7 +48,7 @@ export function betaPosterior(
   n: number,
   alpha: number,
   beta: number,
-  z = 1.64,
+  z = RESEARCH_Z,
 ): { mean: number; lo: number; hi: number; alpha: number; beta: number } {
   const a = alpha + hits;
   const b = beta + Math.max(0, n - hits);
@@ -128,7 +134,7 @@ export function runDigitEngine(args: {
       `WAIT. ${freq.sample} ticks contain only ${distinct} distinct last digit${distinct === 1 ? "" : "s"}. A repeated digit is not evidence the next tick must match, differ, or flip. Not qualified. This is not a guaranteed win rate.`,
     );
   }
-  const z = Number.isFinite(args.z) && (args.z ?? 0) >= 1 && (args.z ?? 0) <= 2.58 ? (args.z as number) : 1.64;
+  const z = Number.isFinite(args.z) && (args.z ?? 0) >= 1 && (args.z ?? 0) <= 2.58 ? (args.z as number) : RESEARCH_Z;
   const minEffective = Number.isFinite(args.minEffective) ? Math.max(10, args.minEffective as number) : 40;
   const persist = args.persist !== false;
   const model = modelContract(args.contract, appearance.flags, fair, z, distinct);
@@ -168,14 +174,19 @@ export function runDigitEngine(args: {
     if (last != null && Math.abs(last - fair) > 0.02 && side * (last - fair) < 0) momentumAgrees = false;
   }
   const ewma = weightedRate(model.contractFlags, lookback);
-  const tail = holdout(model.contractFlags, args.minSample);
-  const tailDisagrees = tail.trials >= 20 && Math.abs(tail.rate - fair) > 0.02 && side * (tail.rate - fair) < 0;
-  const tailClears = tail.trials >= 40 && clearsBaseline(tail.lo, fair, args.minConfidence);
-  const cleared = clearsBaseline(model.lo, fair, args.minConfidence);
+  const cut = Math.floor(model.contractFlags.length * 0.7);
+  const tailDistinct = new Set(freq.digits.slice(cut)).size;
+  const tail = heldOutInterval(model.contractFlags, args.minSample, z, tailDistinct);
+  const tailDisagrees = tail.sufficient && Math.abs(tail.rate - fair) > 0.02 && side * (tail.rate - fair) < 0;
+  const tailClears = tail.sufficient && clearsBaseline(tail.lo, fair, args.minConfidence);
+  const researchCleared = clearsBaseline(model.lo, fair, args.minConfidence);
+  const entryZ = Math.min(z, ENTRY_Z);
+  const entry = entryZ + 1e-9 < z ? modelContract(args.contract, appearance.flags, fair, entryZ, distinct) : model;
+  const entryCleared = clearsBaseline(entry.lo, fair, args.minConfidence);
   let status: "yes" | "no" | "wait" = "no";
   if (!rollingAgrees || !momentumAgrees || tailDisagrees) status = "wait";
-  else if (persist && cleared && tail.trials >= 40 && !tailClears) status = "wait";
-  else if (cleared && (!persist || tail.trials < 40 || tailClears)) status = "yes";
+  else if (entryCleared) status = "yes";
+  const strict = researchCleared && (!persist || tail.trials === 0 || tailClears);
   const quote = quoteMath(args.stake, args.payout, model.estimated);
   const lossNote =
     args.contract === "DIGITDIFF"
@@ -187,18 +198,34 @@ export function runDigitEngine(args: {
     quote.breakEven == null
       ? " Break-even needs a proposal payout. A high probability is not a profit."
       : ` Break-even probability ${pct(quote.breakEven)}. Expected return ${quote.expectedReturn == null ? "—" : quote.expectedReturn.toFixed(3)} at the quoted payout.${quote.expectedReturn != null && quote.expectedReturn < 0 ? " Expected return is negative at this quote. That is shown and is not a hidden block." : ""}`;
-  const body = `${args.strategy}. ${prediction}. Theoretical baseline ${pct(fair)}. Observed frequency ${pct(model.observed)} on ${model.hits} of ${model.sample} ticks. Those are not the same number, and neither one is predictive power. Posterior estimate ${pct(model.estimated)}. Interval ${pct(model.lo)} to ${pct(model.hi)}. Effective sample ${Math.round(model.nEff)} of ${model.sample}. The posterior uses that effective sample, not one count per correlated tick. ${model.prior} Recent ${recent.length} ticks ${rollingAgrees ? "agree" : "do not agree"}. ${windows} non-overlapping windows. Weighted frequency ${ewma == null ? "—" : pct(ewma)} is descriptive only. Held-out tail ${tail.hits}/${tail.trials}. A deviation is not assumed to reverse or continue. These checks are one distribution, not separate confirmation.${lossNote}${money} This is not a guaranteed win rate. ${NO_VERIFIED_EDGE} ${NO_VERIFIED_OOS}`;
+  const shrunk = model.nEff + 0.05 < model.sample;
+  const dependence = shrunk
+    ? `Effective sample ${Math.round(model.nEff)} of ${model.sample}. The posterior uses that effective sample, not one count per correlated tick.`
+    : `Effective sample ${Math.round(model.nEff)} of ${model.sample}. It was not reduced. The posterior does not treat that as a dependence correction.`;
+  const heldSame = tail.trials > 0 && tail.nEff + 0.05 >= tail.trials;
+  const held = `Held-out raw ${tail.hits}/${tail.trials}. Held-out effective ${tail.nEff.toFixed(1)}. ${
+    tail.sufficient
+      ? heldSame
+        ? `Held-out interval ${pct(tail.lo)} to ${pct(tail.hi)} was not widened, because the effective count is not below the raw count.`
+        : `Held-out interval ${pct(tail.lo)} to ${pct(tail.hi)} uses that effective count.`
+      : "Held-out effective evidence is not enough, so a raw Wilson interval is not used as proof."
+  }`;
+  const oosIsWhy = status !== "yes" && (tailDisagrees || (tail.trials > 0 && !researchCleared && !tailClears));
+  const stamp = status === "yes" ? "" : oosIsWhy ? ` ${NO_VERIFIED_OOS}` : ` ${NO_VERIFIED_EDGE}`;
+  const body = `${args.strategy}. ${prediction}. Confidence ${confidenceLabel(z)} (z ${z.toFixed(2)}). Theoretical baseline ${pct(fair)}. Observed frequency ${pct(model.observed)} on ${model.hits} of ${model.sample} ticks. Those are not the same number, and neither one is predictive power. Posterior estimate ${pct(model.estimated)}. Interval ${pct(model.lo)} to ${pct(model.hi)}. ${dependence} ${model.prior} Recent ${recent.length} ticks ${rollingAgrees ? "agree" : "do not agree"}. ${windows} non-overlapping windows. Weighted frequency ${ewma == null ? "—" : pct(ewma)} is descriptive only. ${held} A deviation is not assumed to reverse or continue. These checks are one distribution, not separate confirmation.${lossNote}${money} This is not a guaranteed win rate.${stamp}`;
   const reason = !rollingAgrees
     ? `WAIT. The recent window disagrees with the longer sample. That disagreement is not a reversal signal. ${body}`
     : !momentumAgrees
       ? `WAIT. The latest non-overlapping window disagrees with the longer sample. ${body}`
       : tailDisagrees
         ? `WAIT. UNPROVEN. The held-out period did not keep the same side of the baseline. ${body}`
-        : persist && tail.trials >= 40 && !tailClears && cleared
-          ? `WAIT. UNPROVEN. The held-out lower bound does not clear the baseline. ${body}`
-          : status === "yes"
-            ? `${body} Qualified because the lower bound is above that baseline.`
-            : `${body} Not qualified. The estimate being above the baseline is not enough when the lower bound still covers it.`;
+        : status === "yes" && strict
+          ? `${body} Qualified because the lower bound is above that baseline.`
+          : status === "yes" && researchCleared
+            ? `${body} Qualified for an entry. The in-sample lower bound clears the baseline. The held-out lower bound does not, so this is not a verified edge.`
+            : status === "yes"
+              ? `${body} Qualified for an entry because the posterior is above the baseline and the recent sample agrees. The displayed lower bound still covers the baseline, so this is not a verified edge.`
+              : `${body} Not qualified. The estimate being above the baseline is not enough when the entry check still covers it.`;
   return {
     contract: args.contract,
     prediction,
@@ -263,8 +290,11 @@ export type DigitBacktest = {
   oosTrials: number;
   oosHits: number;
   oosHitRate: number | null;
-  /** Effective outcomes after lag-1 dependence. Never larger than the raw count. */
+  /** Effective outcomes after the Bartlett adjustment. Never larger than the raw count. */
   oosEffective: number;
+  /** Dependence-adjusted interval. Not a raw Wilson interval. */
+  oosLo: number;
+  oosHi: number;
   oosEv: number | null;
   maxDrawdown: number | null;
   profitFactor: number | null;
@@ -327,12 +357,17 @@ export function backtestDigitEngine(args: {
   }
   const finalStart = args.prices.length - finalCount;
   const periodHits = Array.from({ length: plan.periods }, () => ({ hits: 0, trials: 0 }));
+  const periodFlags: boolean[][] = Array.from({ length: plan.periods }, () => []);
+  const periodDigits: number[][] = Array.from({ length: plan.periods }, () => []);
   for (let outcome = finalStart; outcome < args.prices.length; outcome += 1) {
     const past = args.prices.slice(0, outcome);
     const future = lastDigit(args.prices[outcome], args.pip);
     if (future < 0 || future > 9) continue;
     checked += 1;
     const period = Math.min(plan.periods - 1, Math.floor((outcome - finalStart) / plan.final));
+    const win = digitWins(args.contract, args.barrier, future);
+    periodFlags[period]?.push(win);
+    periodDigits[period]?.push(future);
     const report = runDigitEngine({
       contract: args.contract,
       quotes: past,
@@ -345,9 +380,9 @@ export function backtestDigitEngine(args: {
       persist: false,
       stake: args.stake,
       payout: args.payout,
+      z: args.z,
     });
     if (report.status !== "yes") continue;
-    const win = digitWins(args.contract, args.barrier, future);
     const profit = args.payout != null && args.payout > 0 ? (win ? args.payout - args.stake : -args.stake) : 0;
     decisions.push({ win, p: report.estimated, profit });
     const bucket = periodHits[period];
@@ -356,18 +391,24 @@ export function backtestDigitEngine(args: {
       if (win) bucket.hits += 1;
     }
   }
-  const flipped = periodHits.some((bucket) => bucket.trials >= 5 && bucket.hits / bucket.trials <= fair);
+  const confirmZ = adjustedZ(args.z ?? RESEARCH_Z, args.comparisons ?? 1);
+  const agreement = judgePeriods(
+    periodFlags.map((flags, index) => ({ flags, distinct: new Set(periodDigits[index] ?? []).size })),
+    fair,
+    confirmZ,
+  );
   const periodNote = periodHits.map((bucket, index) => `P${index + 1} ${bucket.hits}/${bucket.trials}`).join(", ");
+  const periodFail = agreement.ok ? "" : ` ${agreement.note}`;
   if (args.payout == null || !(args.payout > 0)) {
-    return packBacktest(args, decisions, checked, fair, "unproven", `No proposal payout was available, so expected return was not invented. Periods ${periodNote}.`);
+    return packBacktest(args, decisions, checked, fair, "unproven", `No proposal payout was available, so expected return was not invented. Periods ${periodNote}.${periodFail}`);
   }
   return packBacktest(
     args,
     decisions,
     checked,
     fair,
-    flipped ? "unproven" : null,
-    `SIMULATED USING CURRENT PAYOUT. The barrier was supplied for this test and was not replaced after validation. Each decision uses only earlier ticks. Untouched ticks ${finalStart + 1}-${args.prices.length} are ${plan.periods} periods of ${plan.final}. Periods ${periodNote}. A positive historical result is not proof of future profitability.`,
+    agreement.ok ? null : "unproven",
+    `SIMULATED USING CURRENT PAYOUT. The barrier was supplied for this test and was not replaced after validation. Each decision uses only earlier ticks. Untouched ticks ${finalStart + 1}-${args.prices.length} are ${plan.periods} periods of ${plan.final}. Periods ${periodNote}.${periodFail} A positive historical result is not proof of future profitability.`,
   );
 }
 
@@ -436,21 +477,34 @@ export function selectAutoBarrier(args: {
     };
   }
   const fair = fairDigit(args.type, String(chosen));
-  const validation = sliceFlags(args.digits, args.type, chosen, validationStart, finalStart);
-  const finalFlags = sliceFlags(args.digits, args.type, chosen, finalStart, args.digits.length);
-  const validationSpan = flagInterval(validation, args.z);
-  const finalSpan = flagInterval(finalFlags, adjustedZ(args.z, 1));
   const trainFlags = sliceFlags(args.digits, args.type, chosen, trainStart, validationStart);
   const trainRate = trainFlags.length ? trainFlags.filter(Boolean).length / trainFlags.length : 0;
+  const validationDigits = args.digits.slice(validationStart, finalStart);
+  const finalDigits = args.digits.slice(finalStart);
+  const searched = Math.max(1, Math.round(args.allowed.length) || 1);
+  const confirmZ = adjustedZ(args.z, searched);
+  const validationSpan = flagInterval(sliceFlags(args.digits, args.type, chosen, validationStart, finalStart), confirmZ, new Set(validationDigits).size);
+  const finalSpan = flagInterval(sliceFlags(args.digits, args.type, chosen, finalStart, args.digits.length), confirmZ, new Set(finalDigits).size);
   const validated =
     fair != null &&
     validationSpan.n >= 20 &&
     validationSpan.nEff >= 20 &&
     validationSpan.lo > fair &&
     (validationSpan.p - fair) * (trainRate - fair) > 0;
-  const periodsOk = finalPeriodsAgree(finalFlags, plan.final, plan.periods, fair ?? 1);
-  const supported = validated && fair != null && finalSpan.nEff >= plan.minOos && finalSpan.lo > fair && periodsOk;
-  const where = `Training ticks ${trainStart + 1}-${validationStart}. Validation ticks ${validationStart + 1}-${finalStart}. Final untouched ticks ${finalStart + 1}-${args.digits.length}.`;
+  const slices = Array.from({ length: plan.periods }, (_, index) => {
+    const digits = args.digits.slice(finalStart + index * plan.final, finalStart + (index + 1) * plan.final);
+    return {
+      flags: digits.map((digit) => digitWins(args.type, String(chosen), digit)),
+      distinct: new Set(digits).size,
+    };
+  });
+  const agreement = judgePeriods(slices, fair ?? 1, confirmZ);
+  const supported = validated && fair != null && finalSpan.nEff >= plan.minOos && finalSpan.lo > fair && agreement.ok;
+  const searchNote =
+    searched === 1
+      ? `Confirmation uses the pre-specified interval z ${confirmZ.toFixed(2)}.`
+      : `Discovery searched ${searched} barriers. Confirmation z is ${confirmZ.toFixed(2)}, stricter than one pre-specified test at ${args.z.toFixed(2)}.`;
+  const where = `Training ticks ${trainStart + 1}-${validationStart}. Validation ticks ${validationStart + 1}-${finalStart}. Final untouched ticks ${finalStart + 1}-${args.digits.length}. ${searchNote}`;
   if (!validated) {
     return {
       barrier: chosen,
@@ -466,8 +520,8 @@ export function selectAutoBarrier(args: {
     supported,
     ...span,
     reason: supported
-      ? `Auto barrier ${chosen}. ${where} Theoretical baseline ${pct(fair ?? 0)}. Validation observed ${pct(validationSpan.p)}. Final observed ${pct(finalSpan.p)}. Interval ${pct(finalSpan.lo)} to ${pct(finalSpan.hi)}. Effective final sample ${Math.round(finalSpan.nEff)}. A positive historical result is not proof of future profitability.`
-      : `Auto barrier ${chosen}. ${where} Theoretical baseline ${fair == null ? "—" : pct(fair)}. Validation observed ${pct(validationSpan.p)}. Final observed ${pct(finalSpan.p)}. Effective final sample ${Math.round(finalSpan.nEff)}. ${NO_VERIFIED_OOS}`,
+      ? `Auto barrier ${chosen}. ${where} Theoretical baseline ${pct(fair ?? 0)}. Validation observed ${pct(validationSpan.p)}. Final observed ${pct(finalSpan.p)}. Interval ${pct(finalSpan.lo)} to ${pct(finalSpan.hi)}. Effective final sample ${Math.round(finalSpan.nEff)} of ${finalSpan.n} raw. ${agreement.note} A positive historical result is not proof of future profitability.`
+      : `Auto barrier ${chosen}. ${where} Theoretical baseline ${fair == null ? "—" : pct(fair)}. Validation observed ${pct(validationSpan.p)}. Final observed ${pct(finalSpan.p)}. Effective final sample ${Math.round(finalSpan.nEff)} of ${finalSpan.n} raw. ${agreement.note} ${NO_VERIFIED_OOS}`,
   };
 }
 
@@ -485,8 +539,7 @@ export function rankDigitBacktests(rows: DigitBacktest[]): { best: DigitBacktest
 }
 
 export function backtestCategories(row: DigitBacktest, sample: number): string[] {
-  const span = wilsonInterval(row.oosHits, row.oosTrials);
-  const interval = row.oosTrials > 0 ? `${pct(span.lo)} to ${pct(span.hi)}` : "—";
+  const interval = row.oosTrials > 0 ? `${pct(row.oosLo)} to ${pct(row.oosHi)}` : "—";
   const money = (value: number | null, digits = 2) => (value == null ? "—" : value.toFixed(digits));
   const edge = row.verdict === "supported"
     ? "This sample's out-of-sample return was positive. That is not a promise about the next contract. A positive historical result is not proof of future profitability."
@@ -501,8 +554,9 @@ export function backtestCategories(row: DigitBacktest, sample: number): string[]
     "E. Demo execution records are kept separate and were not used in this simulation.",
     "F. Verified live execution records are kept separate and were not used in this simulation.",
     `Signals checked ${row.checked}. Qualified signals ${row.decisions}. Trades executed 0. Simulated wins ${row.simWins}. Simulated losses ${row.simLosses}. Refunds 0. Unresolved 0.`,
-    `Gross payout ${money(row.grossPayout)}. Net ${money(row.net)}. Maximum simulated drawdown ${money(row.simDrawdown)}. Average stake ${money(row.avgStake)}. Average payout ${money(row.payout)}. Break-even ${row.breakEven == null ? "—" : pct(row.breakEven)}. Out-of-sample interval ${interval}. Out-of-sample ${row.oosHits}/${row.oosTrials}. Effective out-of-sample ${row.oosEffective.toFixed(1)}. These are not settlement records.`,
+    `Gross payout ${money(row.grossPayout)}. Net ${money(row.net)}. Maximum simulated drawdown ${money(row.simDrawdown)}. Average stake ${money(row.avgStake)}. Average payout ${money(row.payout)}. Break-even ${row.breakEven == null ? "—" : pct(row.breakEven)}. Out-of-sample interval ${interval} uses the effective count, not a raw Wilson interval. Out-of-sample raw ${row.oosHits}/${row.oosTrials}. Effective out-of-sample ${row.oosEffective.toFixed(1)}. These are not settlement records.`,
     `Calibration. Brier score ${row.brier == null ? "—" : row.brier.toFixed(3)}. Observed frequency, the posterior estimate, and the interval are three different numbers. A high win rate is not profit.`,
+    DEPENDENCE_LIMIT,
     edge,
   ];
 }
@@ -583,7 +637,7 @@ function packBacktest(
   }
   const ess = effectiveSample(oos.map((row) => row.win));
   const hitsEff = ess.n > 0 ? (ess.hits / ess.n) * ess.nEff : 0;
-  const z = adjustedZ(args.z ?? 1.64, args.comparisons ?? 1);
+  const z = adjustedZ(args.z ?? RESEARCH_Z, args.comparisons ?? 1);
   const span = wilsonInterval(hitsEff, ess.nEff, z);
   const requested = Number.isFinite(args.minOos) ? Math.round(args.minOos as number) : MIN_OOS_EVIDENCE;
   const minOos = Math.max(MIN_OOS_EVIDENCE, requested);
@@ -613,6 +667,8 @@ function packBacktest(
     oosHits: hits,
     oosHitRate: hitRate,
     oosEffective: ess.nEff,
+    oosLo: span.lo,
+    oosHi: span.hi,
     oosEv: ev,
     maxDrawdown: oos.length ? drawdown : null,
     profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
@@ -634,11 +690,8 @@ function modelContract(contract: string, appearance: boolean[], fair: number, z:
   const sample = appearance.length;
   const eventHits = appearance.reduce((sum, flag) => sum + (flag ? 1 : 0), 0);
   const complement = contract === "DIGITDIFF";
-  const span = effectiveSample(appearance);
-  // A constant indicator on a rotating tape is an extreme rate, not one frozen tick.
-  // All-true flags with no digit context stay one effective sample in effectiveSample.
-  const frozen = span.n >= 3 && (span.hits === 0 || span.hits === span.n);
-  const nEff = frozen && distinct >= 3 ? span.n : span.nEff;
+  const span = effectiveSample(appearance, distinct);
+  const nEff = span.nEff;
   const hitsEff = span.n > 0 ? (span.hits / span.n) * nEff : 0;
   const wilson = wilsonInterval(hitsEff, nEff, z);
   const eventFair = complement ? 1 - fair : fair;
@@ -650,6 +703,9 @@ function modelContract(contract: string, appearance: boolean[], fair: number, z:
   const observedEvent = sample ? eventHits / sample : 0;
   const contractFlags = complement ? appearance.map((flag) => !flag) : appearance;
   const hits = complement ? sample - eventHits : eventHits;
+  const priorNote = complement
+    ? `The prior is on the digit appearing: Beta(${prior.alpha}, ${prior.beta}), mean ${pct(eventFair)}, strength ${PRIOR_STRENGTH}. Differs is one minus that posterior, so the contract prior mean is ${pct(fair)}. A baseline prior is not an edge.`
+    : prior.note;
   return {
     hits,
     sample,
@@ -658,7 +714,7 @@ function modelContract(contract: string, appearance: boolean[], fair: number, z:
     estimated: complement ? 1 - eventP : eventP,
     lo: complement ? 1 - eventHi : eventLo,
     hi: complement ? 1 - eventLo : eventHi,
-    prior: prior.note,
+    prior: priorNote,
     contractFlags,
   };
 }
@@ -679,13 +735,27 @@ function appearanceFlags(contract: string, barrier: string, digits: number[]): {
   return null;
 }
 
-function holdout(flags: boolean[], minSample: number): { trials: number; hits: number; rate: number; lo: number } {
-  if (flags.length < minSample + 20) return { trials: 0, hits: 0, rate: 0, lo: 0 };
+export function heldOutInterval(
+  flags: boolean[],
+  minSample: number,
+  z = RESEARCH_Z,
+  distinct = 0,
+): { trials: number; hits: number; nEff: number; rate: number; lo: number; hi: number; rho: number; sufficient: boolean } {
+  if (flags.length < minSample + 20) return { trials: 0, hits: 0, nEff: 0, rate: 0, lo: 0, hi: 1, rho: 0, sufficient: false };
   const cut = Math.floor(flags.length * 0.7);
   const tail = flags.slice(cut);
-  const hits = tail.filter(Boolean).length;
-  const wilson = wilsonInterval(hits, tail.length);
-  return { trials: tail.length, hits, rate: tail.length ? hits / tail.length : 0, lo: wilson.lo };
+  const span = flagInterval(tail, z, distinct);
+  const sufficient = span.nEff >= MIN_OOS_EVIDENCE && span.n >= 20;
+  return {
+    trials: span.n,
+    hits: span.hits,
+    nEff: span.nEff,
+    rate: span.n ? span.hits / span.n : 0,
+    lo: sufficient ? span.lo : 0,
+    hi: span.hi,
+    rho: span.rho,
+    sufficient,
+  };
 }
 
 function weightedRate(flags: boolean[], span: number): number | null {
@@ -716,6 +786,13 @@ function stampEvidence(reason: string): string {
   return `${reason} ${NO_VERIFIED_EDGE}`;
 }
 
+/** The one evidence line the panel should show. A live signal is never labeled as missing evidence. */
+export function evidenceHeadline(reason: string): string {
+  if (reason.includes("Qualified for an entry") || reason.includes("Qualified because")) return "Signal. Not a verified edge.";
+  if (reason.includes(NO_VERIFIED_OOS) || reason.includes(NO_VERIFIED_EDGE)) return "No signal.";
+  return "No signal.";
+}
+
 export type EvidencePlan = {
   train: number;
   validation: number;
@@ -744,21 +821,41 @@ function sliceFlags(digits: number[], type: string, barrier: number, start: numb
   return digits.slice(start, end).map((digit) => digitWins(type, String(barrier), digit));
 }
 
-function flagInterval(flags: boolean[], z: number): { p: number; lo: number; hi: number; n: number; nEff: number; hits: number } {
-  const span = effectiveSample(flags);
+function flagInterval(flags: boolean[], z: number, distinct = 0): { p: number; lo: number; hi: number; n: number; nEff: number; hits: number; rho: number } {
+  const span = effectiveSample(flags, distinct);
   const hitsEff = span.n > 0 ? (span.hits / span.n) * span.nEff : 0;
   const wilson = wilsonInterval(hitsEff, span.nEff, z);
-  return { p: wilson.p, lo: wilson.lo, hi: wilson.hi, n: span.n, nEff: span.nEff, hits: span.hits };
+  return { p: wilson.p, lo: wilson.lo, hi: wilson.hi, n: span.n, nEff: span.nEff, hits: span.hits, rho: span.rho };
 }
 
-/** Each untouched period has to stay on the same side of the baseline. One failure is not replaced. */
-function finalPeriodsAgree(flags: boolean[], final: number, periods: number, fair: number): boolean {
-  if (!(fair > 0) || !(fair < 1) || flags.length < final * periods) return false;
-  for (let index = 0; index < periods; index += 1) {
-    const slice = flags.slice(index * final, (index + 1) * final);
-    if (slice.length < final) return false;
-    const rate = slice.filter(Boolean).length / slice.length;
-    if (rate <= fair) return false;
+/** Each untouched period must clear its own effective-sample interval. A failed period is not replaced. */
+function judgePeriods(
+  slices: { flags: boolean[]; distinct: number }[],
+  fair: number,
+  z: number,
+): { ok: boolean; note: string } {
+  if (!(fair > 0) || !(fair < 1) || slices.length < 2) {
+    return { ok: false, note: "A final period was missing, so none was replaced." };
   }
-  return true;
+  let direction = 0;
+  for (let index = 0; index < slices.length; index += 1) {
+    const slice = slices[index];
+    const label = `Period ${index + 1}`;
+    if (!slice || slice.flags.length < 20) {
+      return { ok: false, note: `${label} did not meet its minimum evidence and was not replaced.` };
+    }
+    const span = flagInterval(slice.flags, z, slice.distinct);
+    if (span.nEff < 20) {
+      return { ok: false, note: `${label} effective sample ${span.nEff.toFixed(1)} is below 20. It was not replaced.` };
+    }
+    if (!(span.lo > fair)) {
+      return { ok: false, note: `${label} interval ${pct(span.lo)} to ${pct(span.hi)} does not clear the baseline. It was not replaced.` };
+    }
+    const sign = Math.sign(span.p - fair);
+    if (direction === 0) direction = sign;
+    else if (sign !== direction) {
+      return { ok: false, note: `${label} did not keep the same side of the baseline. It was not replaced.` };
+    }
+  }
+  return { ok: true, note: `All ${slices.length} final periods cleared their own intervals. No period was dropped.` };
 }

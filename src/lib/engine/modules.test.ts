@@ -1,8 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeBook } from "./analyze.ts";
-import { approvedEntry, defaultModule, defaultModules, observeModule, readModule, walkModule } from "./modules.ts";
+import { applyStrategyChoice, approvedEntry, bestStrategies, defaultModule, defaultModules, observeModule, readModule, walkModule } from "./modules.ts";
 import { defaultProfile } from "./profiles.ts";
+
+test("a contract selects its own strategies", () => {
+  const differs = bestStrategies("DIGITDIFF");
+  assert.ok(differs.includes("statistical"));
+  assert.ok(differs.includes("selectedDigit"));
+  assert.equal(differs.includes("parity"), false);
+  assert.equal(differs.includes("barrierProb"), false);
+  assert.equal(differs.includes("ensemble"), false);
+  const even = bestStrategies("DIGITEVEN");
+  assert.ok(even.includes("parity"));
+  assert.equal(even.includes("selectedDigit"), false);
+  const over = bestStrategies("DIGITOVER");
+  assert.ok(over.includes("barrierProb"));
+  const call = bestStrategies("CALL");
+  assert.ok(call.includes("pullback"));
+  assert.equal(call.includes("parity"), false);
+  const chosen = applyStrategyChoice(defaultModules(), "DIGITDIFF");
+  assert.equal(chosen.selectedDigit.enabled, true);
+  assert.equal(chosen.parity.enabled, false);
+  assert.equal(chosen.streakFollow.enabled, false);
+  const cleared = applyStrategyChoice(chosen, null);
+  assert.equal(cleared.selectedDigit.enabled, false);
+});
 
 test("disabled modules cannot open a trade", () => {
   const quotes: number[] = [];

@@ -17,6 +17,7 @@ import {
   Crosshair,
   Layers,
   OctagonX,
+  Boxes,
 } from "lucide-react";
 import { money } from "@/lib/format";
 import { contractName } from "@/lib/engine/catalog";
@@ -52,6 +53,7 @@ const NAV: { id: DeskView; label: string; icon: typeof Radar; mobile?: boolean }
   { id: "alerts", label: "Alerts", icon: Bell },
   { id: "settings", label: "Settings", icon: Settings },
   { id: "help", label: "Help", icon: CircleHelp },
+  { id: "bulk", label: "AI Bulk Trader", icon: Boxes },
 ];
 
 export function Terminal() {
@@ -96,11 +98,11 @@ export function Terminal() {
     ? "Not signed in"
     : account.account_type === "real"
       ? realArmed
-        ? "Real armed"
-        : "Real DISARMED"
+        ? "Real started"
+        : "Idle"
       : armDemo
-        ? "Demo armed"
-        : "Demo disarmed";
+        ? "Demo started"
+        : "Idle";
   const mine = accountId ? attempts.filter((row) => row.accountId === accountId) : [];
   const openTrade = accountId ? (journal.find((row) => row.accountId === accountId && row.status === "open") ?? null) : null;
   const latestAttempt =

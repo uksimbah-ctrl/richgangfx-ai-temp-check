@@ -32,7 +32,7 @@ export type StrategyProfile = {
   longWindow: number;
   /** Minimum effective sample after dependence. Not a win rate. */
   minEffective: number;
-  /** Normal z for the equal-tail interval. 1.64 is about 90%. 1.96 (95%) is the recommended research setting. */
+  /** Normal z for the equal-tail interval. A new contract uses 1.96 (about 95%). A saved value is not rewritten. */
   intervalZ: number;
   /** Training ticks used only to choose an auto barrier. Not a stake. */
   trainSize: number;
@@ -98,7 +98,7 @@ export function defaultProfile(type: string): StrategyProfile {
     mediumWindow: 100,
     longWindow: 300,
     minEffective: 40,
-    intervalZ: 1.64,
+    intervalZ: 1.96,
     trainSize: 80,
     validationSize: 40,
     finalSize: 40,
@@ -123,7 +123,7 @@ export function defaultProfile(type: string): StrategyProfile {
 
 export const CONFIDENCE_LEVELS = [
   { z: 1.64, label: "90%" },
-  { z: 1.96, label: "95% — recommended for research" },
+  { z: 1.96, label: "95% — default for a new contract" },
   { z: 2.58, label: "99%" },
 ] as const;
 
@@ -138,10 +138,11 @@ export function defaultBook(): Record<string, StrategyProfile> {
   return book;
 }
 
-/** Old saved books omit Auto Barrier Selection. A missing flag stays off. It is never turned on by a merge. */
+/** Old saved books omit Auto Barrier Selection. A missing flag stays off. A saved confidence level is kept. */
 export function mergeProfile(base: StrategyProfile, saved: Partial<StrategyProfile>): StrategyProfile {
   const autoBarrier = "autoBarrier" in saved ? saved.autoBarrier === true : base.autoBarrier === true;
-  return { ...base, ...saved, type: saved.type || base.type, autoBarrier, method: "beta-binomial" };
+  const intervalZ = typeof saved.intervalZ === "number" && Number.isFinite(saved.intervalZ) ? saved.intervalZ : base.intervalZ;
+  return { ...base, ...saved, type: saved.type || base.type, autoBarrier, intervalZ, method: "beta-binomial" };
 }
 
 /** Signal filters only. Stake, loss limits, cooldown, and exposure stay as the user set them. */
@@ -212,7 +213,7 @@ export function clampProfile(profile: StrategyProfile): StrategyProfile {
     duration: Math.max(1, Math.round(profile.duration)),
     minSample: Math.max(1, Math.round(profile.minSample)),
     minEffective: Math.min(2000, Math.max(10, Math.round(profile.minEffective || 40))),
-    intervalZ: Math.min(2.58, Math.max(1, profile.intervalZ || 1.64)),
+    intervalZ: Math.min(2.58, Math.max(1, profile.intervalZ || 1.96)),
     trainSize: Math.min(5000, Math.max(40, Math.round(profile.trainSize || 80))),
     validationSize: Math.min(5000, Math.max(20, Math.round(profile.validationSize || 40))),
     finalSize: Math.min(5000, Math.max(20, Math.round(profile.finalSize || 40))),
